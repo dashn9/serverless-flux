@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "Hello from serverless function!"
+echo "Timestamp: $(date)"
+echo "Hostname: $(hostname)"

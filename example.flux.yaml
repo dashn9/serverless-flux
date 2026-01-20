@@ -1,0 +1,9 @@
+redis_addr: localhost:6379
+
+agents:
+  - id: agent-1
+    address: localhost:50052
+    max_concurrency: 10
+  - id: agent-2
+    address: localhost:50053
+    max_concurrency: 10

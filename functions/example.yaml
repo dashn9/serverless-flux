@@ -1,0 +1,6 @@
+name: hello-world
+handler: main      # execution entry point
+resources:
+  cpu: 100        # millicores (100 = 0.1 core)
+  memory: 128     # MB
+timeout: 30       # seconds

@@ -1,0 +1,19 @@
+package memory
+
+import "flux/pkg/models"
+
+// Memory is the interface for persisting state
+type Memory interface {
+	// Function operations
+	SaveFunction(function *models.Function) error
+	GetFunction(name string) (*models.Function, error)
+	GetAllFunctions() ([]*models.Function, error)
+
+	// Agent operations
+	SaveAgent(agent *models.Agent) error
+	GetAgent(id string) (*models.Agent, error)
+	GetAllAgents() ([]*models.Agent, error)
+
+	// Close the storage connection
+	Close() error
+}
