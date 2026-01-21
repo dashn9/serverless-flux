@@ -74,6 +74,9 @@ resources:
   cpu: 100             # Millicores (100 = 0.1 core)
   memory: 128          # MB
 timeout: 30            # Seconds
+env:                   # Optional environment variables
+  API_KEY: your-key
+  DATABASE_URL: postgres://localhost/db
 ```
 
 ## Quick Start
@@ -161,16 +164,25 @@ API_KEY=my-secret-key go run main.go
 
 This registers the function configuration with Flux and all agents:
 
+First, create a function YAML file (e.g., `function.yaml`):
+```yaml
+name: hello-world
+handler: main
+resources:
+  cpu: 100
+  memory: 128
+timeout: 30
+env:
+  API_KEY: your-api-key
+  DATABASE_URL: postgres://localhost:5432/mydb
+```
+
+Then register it:
 ```bash
-curl -X POST http://localhost:7227/functions \
+curl -X PUT http://localhost:7227/functions \
   -H "X-API-Key: my-secret-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "hello-world",
-    "handler": "main",
-    "resources": {"cpu": 100, "memory": 128},
-    "timeout": 30
-  }'
+  -H "Content-Type: application/x-yaml" \
+  --data-binary @function.yaml
 ```
 
 ### 8. Deploy Function Code
@@ -198,7 +210,35 @@ Note: Function must be registered before deployment.
 curl -X POST http://localhost:7227/execute/hello-world \
   -H "X-API-Key: my-secret-key" \
   -H "Content-Type: application/json" \
-  -d '{"input": {"message": "test"}}'
+  -d '{"args": ["arg1", "arg2", "arg3"]}'
+```
+
+Success response (HTTP 200):
+```json
+{
+  "status": "success",
+  "output": "execution output here",
+  "duration_ms": 1234,
+  "agent_id": "agent-1"
+}
+```
+
+Failed execution (HTTP 500):
+```json
+{
+  "status": "failed",
+  "error": "error message here",
+  "duration_ms": 100,
+  "agent_id": "agent-1"
+}
+```
+
+Example with no arguments:
+```bash
+curl -X POST http://localhost:7227/execute/hello-world \
+  -H "X-API-Key: my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"args": []}'
 ```
 
 ### 10. List Agents
@@ -214,6 +254,6 @@ curl http://localhost:7227/agents
 - `GET /agents` - List all registered agents
 
 ### Protected Endpoints (require API key)
-- `POST /functions` - Register a new function
+- `PUT /functions` - Register a new function (YAML file)
 - `PUT /deploy/{function_name}` - Deploy code to a registered function (zip file)
 - `POST /execute/{function_name}` - Execute a function

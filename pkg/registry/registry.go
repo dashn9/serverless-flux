@@ -11,47 +11,14 @@ import (
 type Registry struct {
 	mu        sync.RWMutex
 	agents    map[string]*models.Agent
-	functions map[string]*models.Function
 	memory    memory.Memory
 }
 
 func NewRegistry(mem memory.Memory) *Registry {
-	r := &Registry{
-		agents:    make(map[string]*models.Agent),
-		functions: make(map[string]*models.Function),
-		memory:    mem,
+	return &Registry{
+		agents: make(map[string]*models.Agent),
+		memory: mem,
 	}
-
-	// Restore state from memory on startup
-	if err := r.restore(); err != nil {
-		log.Printf("Warning: failed to restore state: %v", err)
-	}
-
-	return r
-}
-
-func (r *Registry) restore() error {
-	// Restore functions
-	functions, err := r.memory.GetAllFunctions()
-	if err != nil {
-		return err
-	}
-	for _, fn := range functions {
-		r.functions[fn.Name] = fn
-	}
-	log.Printf("Restored %d functions from memory", len(functions))
-
-	// Restore agents
-	agents, err := r.memory.GetAllAgents()
-	if err != nil {
-		return err
-	}
-	for _, agent := range agents {
-		r.agents[agent.ID] = agent
-	}
-	log.Printf("Restored %d agents from memory", len(agents))
-
-	return nil
 }
 
 func (r *Registry) RegisterAgent(id, address string, maxConcurrent int32) {
@@ -123,21 +90,15 @@ func (r *Registry) GetAllAgents() []*models.Agent {
 }
 
 func (r *Registry) RegisterFunction(fn *models.Function) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.functions[fn.Name] = fn
-
-	// Persist to memory
 	if err := r.memory.SaveFunction(fn); err != nil {
-		log.Printf("Failed to persist function %s: %v", fn.Name, err)
+		log.Printf("Failed to save function %s: %v", fn.Name, err)
 	}
 }
 
 func (r *Registry) GetFunction(name string) (*models.Function, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	fn, ok := r.functions[name]
-	return fn, ok
+	fn, err := r.memory.GetFunction(name)
+	if err != nil || fn == nil {
+		return nil, false
+	}
+	return fn, true
 }

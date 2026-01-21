@@ -4,6 +4,12 @@ package flux;
 
 option go_package = "flux/proto";
 
+// Flux service - Master
+service FluxService {
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
 // Agent service - Worker
 service AgentService {
   rpc RegisterFunction(FunctionConfig) returns (FunctionAck);
@@ -12,9 +18,29 @@ service AgentService {
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
+message RegisterAgentRequest {
+  string agent_id = 1;
+  string address = 2;
+  int32 max_concurrent = 3;
+}
+
+message RegisterAgentResponse {
+  bool success = 1;
+}
+
+message HeartbeatRequest {
+  string agent_id = 1;
+  int32 active_count = 2;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+}
+
 message DeploymentPackage {
   string function_name = 1;
   bytes code_archive = 2;
+  FunctionConfig config = 3;
 }
 
 message DeploymentAck {
@@ -28,6 +54,7 @@ message FunctionConfig {
   int32 cpu_millicores = 3;
   int64 memory_mb = 4;
   int32 timeout_seconds = 5;
+  map<string, string> env = 6;
 }
 
 message FunctionAck {
@@ -37,7 +64,7 @@ message FunctionAck {
 
 message ExecutionRequest {
   string function_name = 1;
-  bytes input = 2;
+  repeated string args = 2;
 }
 
 message ExecutionResponse {
@@ -46,7 +73,8 @@ message ExecutionResponse {
   int64 duration_ms = 3;
 }
 
-message HealthCheckRequest {}
+message HealthCheckRequest {
+}
 
 message HealthCheckResponse {
   bool healthy = 1;

@@ -26,4 +26,5 @@ type Function struct {
 	MemoryMB      int64
 	TimeoutSec    int32
 	CodePath      string
+	Env           map[string]string
 }
