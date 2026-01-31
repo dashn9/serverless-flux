@@ -19,12 +19,21 @@ const (
 	AgentBusy
 )
 
+type ConcurrencyBehavior string
+
+const (
+	ConcurrencyBehaviorWait ConcurrencyBehavior = "wait"
+	ConcurrencyBehaviorExit ConcurrencyBehavior = "exit"
+)
+
 type Function struct {
-	Name          string
-	Handler       string
-	CPUMillicores int32
-	MemoryMB      int64
-	TimeoutSec    int32
-	CodePath      string
-	Env           map[string]string
+	Name                     string
+	Handler                  string
+	CPUMillicores            int32
+	MemoryMB                 int64
+	TimeoutSec               int32
+	MaxConcurrency           int32
+	MaxConcurrencyBehavior   ConcurrencyBehavior
+	CodePath                 string
+	Env                      map[string]string
 }

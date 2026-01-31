@@ -9,9 +9,9 @@ import (
 )
 
 type Registry struct {
-	mu        sync.RWMutex
-	agents    map[string]*models.Agent
-	memory    memory.Memory
+	mu     sync.RWMutex
+	agents map[string]*models.Agent
+	memory memory.Memory
 }
 
 func NewRegistry(mem memory.Memory) *Registry {

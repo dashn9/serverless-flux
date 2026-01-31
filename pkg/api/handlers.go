@@ -22,11 +22,13 @@ type APIServer struct {
 }
 
 type FunctionYAML struct {
-	Name      string            `yaml:"name"`
-	Handler   string            `yaml:"handler"`
-	Resources ResourceLimits    `yaml:"resources"`
-	Timeout   int32             `yaml:"timeout"`
-	Env       map[string]string `yaml:"env,omitempty"`
+	Name                   string            `yaml:"name"`
+	Handler                string            `yaml:"handler"`
+	Resources              ResourceLimits    `yaml:"resources"`
+	Timeout                int32             `yaml:"timeout"`
+	MaxConcurrency         int32             `yaml:"max_concurrency,omitempty"`
+	MaxConcurrencyBehavior string            `yaml:"max_concurrency_behavior,omitempty"`
+	Env                    map[string]string `yaml:"env,omitempty"`
 }
 
 type ResourceLimits struct {
@@ -182,14 +184,33 @@ func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Set defaults
+	maxConcurrency := funcConfig.MaxConcurrency
+	if maxConcurrency == 0 {
+		maxConcurrency = 5 // Default to 5
+	}
+
+	maxConcurrencyBehavior := models.ConcurrencyBehavior(funcConfig.MaxConcurrencyBehavior)
+	if maxConcurrencyBehavior == "" {
+		maxConcurrencyBehavior = models.ConcurrencyBehaviorExit // Default to exit
+	}
+
+	// Validate behavior
+	if maxConcurrencyBehavior != models.ConcurrencyBehaviorWait && maxConcurrencyBehavior != models.ConcurrencyBehaviorExit {
+		http.Error(w, "max_concurrency_behavior must be 'wait' or 'exit'", http.StatusBadRequest)
+		return
+	}
+
 	// Register function in registry
 	function := &models.Function{
-		Name:          funcConfig.Name,
-		Handler:       funcConfig.Handler,
-		CPUMillicores: funcConfig.Resources.CPU,
-		MemoryMB:      funcConfig.Resources.Memory,
-		TimeoutSec:    funcConfig.Timeout,
-		Env:           funcConfig.Env,
+		Name:                   funcConfig.Name,
+		Handler:                funcConfig.Handler,
+		CPUMillicores:          funcConfig.Resources.CPU,
+		MemoryMB:               funcConfig.Resources.Memory,
+		TimeoutSec:             funcConfig.Timeout,
+		MaxConcurrency:         maxConcurrency,
+		MaxConcurrencyBehavior: maxConcurrencyBehavior,
+		Env:                    funcConfig.Env,
 	}
 	s.registry.RegisterFunction(function)
 
@@ -302,52 +323,71 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 	}
 
 	// Check if function exists
-	_, exists := s.registry.GetFunction(functionName)
+	fn, exists := s.registry.GetFunction(functionName)
 	if !exists {
 		http.Error(w, "function not found", http.StatusNotFound)
 		return
 	}
 
-	// Find available agent
-	agents := s.registry.GetAvailableAgents()
-	if len(agents) == 0 {
-		http.Error(w, "no agents available", http.StatusServiceUnavailable)
-		return
+	for {
+		// Find available agent
+		agents := s.registry.GetAvailableAgents()
+
+		if len(agents) > 0 {
+			// Use first available agent
+			agent := agents[0]
+
+			// Execute on agent
+			result, err := s.agentClient.ExecuteFunction(agent, functionName, req.Args)
+			if err != nil {
+				http.Error(w, "agent communication error: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// If agent rejected because it's full (race condition or per-function limit)
+			if result.Error != "" && strings.Contains(result.Error, "at capacity") {
+				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
+					http.Error(w, result.Error, http.StatusServiceUnavailable)
+					return
+				}
+				// Otherwise wait and retry
+				log.Printf("Agent at capacity for %s, retrying...", functionName)
+				// Success or other failure - return to user
+				status := "success"
+				statusCode := http.StatusOK
+				if result.Error != "" {
+					status = "failed"
+					statusCode = http.StatusInternalServerError
+				}
+
+				response := ExecuteResponse{
+					Status:     status,
+					Output:     string(result.Output),
+					Error:      result.Error,
+					DurationMs: result.DurationMs,
+					AgentID:    agent.ID,
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(statusCode)
+				json.NewEncoder(w).Encode(response)
+				return
+			} else {
+				// No agents available right now
+				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
+					http.Error(w, "no agents available", http.StatusServiceUnavailable)
+					return
+				}
+				log.Printf("No agents available for %s, waiting...", functionName)
+			}
+
+			// Wait before retrying
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+				// Retry loop
+			}
+		}
 	}
-
-	// Use first available agent
-	agent := agents[0]
-
-	// Execute on agent
-	result, err := s.agentClient.ExecuteFunction(agent, functionName, req.Args)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ExecuteResponse{
-			Status:     "error",
-			Error:      err.Error(),
-			DurationMs: 0,
-			AgentID:    agent.ID,
-		})
-		return
-	}
-
-	status := "success"
-	statusCode := http.StatusOK
-	if result.Error != "" {
-		status = "failed"
-		statusCode = http.StatusInternalServerError
-	}
-
-	response := ExecuteResponse{
-		Status:     status,
-		Output:     string(result.Output),
-		Error:      result.Error,
-		DurationMs: result.DurationMs,
-		AgentID:    agent.ID,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
 }

@@ -39,6 +39,38 @@ Communication:
 - Flux → Agents: gRPC (Flux initiates all communication)
 ```
 
+## ⚠️ SECURITY WARNING
+
+**THIS SYSTEM IS CURRENTLY INSECURE AND NOT PRODUCTION-READY**
+
+### Critical Security Issues (PRIORITY TO FIX):
+
+1. **HTTP API has no encryption**
+   - All traffic is sent in plaintext (no HTTPS/TLS)
+   - API keys are transmitted unencrypted in HTTP headers
+   - Anyone on the network can intercept credentials and data
+
+2. **gRPC communication is unencrypted**
+   - Flux ↔ Agent communication uses insecure gRPC
+   - No TLS/mTLS for agent connections
+   - Function code and execution results sent in plaintext
+
+3. **No authentication between Flux and Agents**
+   - Any server can connect to agents
+   - No verification of Flux identity
+
+4. **Weak API key authentication**
+   - Single static API key for all users
+   - No user management or role-based access control
+   - API key stored in environment variable
+
+### Before Production Use:
+- [ ] Add HTTPS/TLS for HTTP API
+- [ ] Implement mTLS for Flux-Agent gRPC communication
+- [ ] Add proper authentication/authorization system
+- [ ] Implement secret management for credentials
+- [ ] Add audit logging for all operations
+
 ### Components
 
 **Flux (Master)**

@@ -65,12 +65,14 @@ func (c *AgentClient) RegisterFunction(agent *models.Agent, function *models.Fun
 	defer cancel()
 
 	resp, err := client.RegisterFunction(ctx, &pb.FunctionConfig{
-		Name:           function.Name,
-		Handler:        function.Handler,
-		CpuMillicores:  function.CPUMillicores,
-		MemoryMb:       function.MemoryMB,
-		TimeoutSeconds: function.TimeoutSec,
-		Env:            function.Env,
+		Name:                    function.Name,
+		Handler:                 function.Handler,
+		CpuMillicores:           function.CPUMillicores,
+		MemoryMb:                function.MemoryMB,
+		TimeoutSeconds:          function.TimeoutSec,
+		Env:                     function.Env,
+		MaxConcurrency:          function.MaxConcurrency,
+		MaxConcurrencyBehavior:  string(function.MaxConcurrencyBehavior),
 	})
 
 	if err != nil {
@@ -117,7 +119,7 @@ func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, 
 	}
 
 	client := pb.NewAgentServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	return client.ExecuteFunction(ctx, &pb.ExecutionRequest{
