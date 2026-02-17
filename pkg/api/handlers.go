@@ -15,6 +15,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TODO(multi-flux): Support multiple Flux nodes forming a cluster that spans
+// itself automatically from a single seed node based on config. Each Flux node
+// would manage a shard of the agent fleet. Attaching a load balancer in front
+// of the Flux cluster is the responsibility of the operator.
+
 type APIServer struct {
 	registry    *registry.Registry
 	apiKey      string
@@ -49,12 +54,25 @@ type ExecuteResponse struct {
 }
 
 type AgentInfo struct {
-	ID            string `json:"id"`
-	Address       string `json:"address"`
-	MaxConcurrent int32  `json:"max_concurrent"`
-	ActiveCount   int32  `json:"active_count"`
-	Status        string `json:"status"`
-	LastHeartbeat string `json:"last_heartbeat"`
+	ID            string          `json:"id"`
+	Address       string          `json:"address"`
+	MaxConcurrent int32           `json:"max_concurrent"`
+	ActiveCount   int32           `json:"active_count"`
+	Status        string          `json:"status"`
+	LastHeartbeat string          `json:"last_heartbeat"`
+	ProviderID    string          `json:"provider_id,omitempty"`
+	NodeStatus    *NodeStatusInfo `json:"node_status,omitempty"`
+}
+
+type NodeStatusInfo struct {
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemPercent  float64 `json:"memory_percent"`
+	MemTotalMB  uint64  `json:"memory_total_mb"`
+	MemUsedMB   uint64  `json:"memory_used_mb"`
+	ActiveTasks int32   `json:"active_tasks"`
+	MaxTasks    int32   `json:"max_tasks"`
+	UptimeSec   int64   `json:"uptime_seconds"`
+	CollectedAt string  `json:"collected_at"`
 }
 
 type AgentOperationStatus struct {
@@ -63,16 +81,25 @@ type AgentOperationStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-func NewAPIServer(registry *registry.Registry, apiKey string) *APIServer {
+// RegisterNodeRequest is the body for POST /nodes/register.
+// An agent calls this endpoint to register itself with Flux.
+// The caller specifies its own ID, the address Flux should dial to reach it,
+// and the maximum number of concurrent executions it supports.
+type RegisterNodeRequest struct {
+	ID             string `json:"id"`
+	Address        string `json:"address"`
+	MaxConcurrency int32  `json:"max_concurrency"`
+}
+
+func NewAPIServer(registry *registry.Registry, apiKey string, agentClient *client.AgentClient) *APIServer {
 	return &APIServer{
 		registry:    registry,
 		apiKey:      apiKey,
-		agentClient: client.NewAgentClient(),
+		agentClient: agentClient,
 	}
 }
 
 func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Route handling
 	if r.URL.Path == "/health" && r.Method == "GET" {
 		s.handleHealth(w, r)
 		return
@@ -80,6 +107,19 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == "/agents" && r.Method == "GET" {
 		s.handleGetAgents(w, r)
+		return
+	}
+
+	// POST /nodes/register — an agent calls this to register itself with Flux.
+	// The agent provides its own ID, reachable address, and concurrency limit.
+	// Use this for any node that isn't statically declared in flux.yaml,
+	// including nodes co-located on the same host (use address: localhost:<port>).
+	if r.URL.Path == "/nodes/register" && r.Method == "POST" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleRegisterNode(w, r)
 		return
 	}
 
@@ -138,28 +178,78 @@ func (s *APIServer) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	response := make([]AgentInfo, len(agents))
 	for i, agent := range agents {
 		status := "offline"
-		if agent.Status == models.AgentOnline {
+		switch agent.Status {
+		case models.AgentOnline:
 			status = "online"
-		} else if agent.Status == models.AgentBusy {
+		case models.AgentBusy:
 			status = "busy"
+		case models.AgentPreRegistered:
+			status = "pre-registered"
 		}
 
-		response[i] = AgentInfo{
+		info := AgentInfo{
 			ID:            agent.ID,
 			Address:       agent.Address,
 			MaxConcurrent: agent.MaxConcurrent,
 			ActiveCount:   agent.ActiveCount,
 			Status:        status,
 			LastHeartbeat: agent.LastHeartbeat.Format(time.RFC3339),
+			ProviderID:    agent.ProviderID,
 		}
+
+		if agent.NodeStatus != nil {
+			info.NodeStatus = &NodeStatusInfo{
+				CPUPercent:  agent.NodeStatus.CPUPercent,
+				MemPercent:  agent.NodeStatus.MemPercent,
+				MemTotalMB:  agent.NodeStatus.MemTotalMB,
+				MemUsedMB:   agent.NodeStatus.MemUsedMB,
+				ActiveTasks: agent.NodeStatus.ActiveTasks,
+				MaxTasks:    agent.NodeStatus.MaxTasks,
+				UptimeSec:   agent.NodeStatus.UptimeSec,
+				CollectedAt: agent.NodeStatus.CollectedAt.Format(time.RFC3339),
+			}
+		}
+
+		response[i] = info
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleRegisterNode handles POST /nodes/register.
+// An agent (or its bootstrap script) calls this to join the Flux fleet.
+func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
+	var req RegisterNodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Address == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+	if req.MaxConcurrency <= 0 {
+		req.MaxConcurrency = 10
+	}
+
+	s.registry.RegisterAgent(req.ID, req.Address, req.MaxConcurrency)
+	log.Printf("[api] Node registered via HTTP: id=%s address=%s max_concurrency=%d", req.ID, req.Address, req.MaxConcurrency)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "registered",
+		"id":     req.ID,
+	})
+}
+
 func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Request) {
-	// Read YAML file from request body
 	yamlData, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read YAML file", http.StatusBadRequest)
@@ -171,37 +261,32 @@ func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Parse YAML
 	var funcConfig FunctionYAML
 	if err := yaml.Unmarshal(yamlData, &funcConfig); err != nil {
 		http.Error(w, "invalid YAML format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Validate required fields
 	if funcConfig.Name == "" || funcConfig.Handler == "" {
 		http.Error(w, "name and handler are required", http.StatusBadRequest)
 		return
 	}
 
-	// Set defaults
 	maxConcurrency := funcConfig.MaxConcurrency
 	if maxConcurrency == 0 {
-		maxConcurrency = 5 // Default to 5
+		maxConcurrency = 5
 	}
 
 	maxConcurrencyBehavior := models.ConcurrencyBehavior(funcConfig.MaxConcurrencyBehavior)
 	if maxConcurrencyBehavior == "" {
-		maxConcurrencyBehavior = models.ConcurrencyBehaviorExit // Default to exit
+		maxConcurrencyBehavior = models.ConcurrencyBehaviorExit
 	}
 
-	// Validate behavior
 	if maxConcurrencyBehavior != models.ConcurrencyBehaviorWait && maxConcurrencyBehavior != models.ConcurrencyBehaviorExit {
 		http.Error(w, "max_concurrency_behavior must be 'wait' or 'exit'", http.StatusBadRequest)
 		return
 	}
 
-	// Register function in registry
 	function := &models.Function{
 		Name:                   funcConfig.Name,
 		Handler:                funcConfig.Handler,
@@ -216,15 +301,12 @@ func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Reques
 
 	log.Printf("Registered function: %s", funcConfig.Name)
 
-	// Register with all agents
 	agents := s.registry.GetAllAgents()
 	statuses := make([]AgentOperationStatus, 0, len(agents))
 	registered := 0
 
 	for _, agent := range agents {
-		status := AgentOperationStatus{
-			AgentID: agent.ID,
-		}
+		status := AgentOperationStatus{AgentID: agent.ID}
 
 		if err := s.agentClient.RegisterFunction(agent, function); err != nil {
 			log.Printf("Failed to register function on agent %s: %v", agent.ID, err)
@@ -254,14 +336,12 @@ func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *APIServer) handleDeploy(w http.ResponseWriter, r *http.Request, functionName string) {
-	// Check if function exists
 	_, exists := s.registry.GetFunction(functionName)
 	if !exists {
 		http.Error(w, "function not registered", http.StatusNotFound)
 		return
 	}
 
-	// Read zip file from request body
 	zipData, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read zip file", http.StatusBadRequest)
@@ -273,7 +353,6 @@ func (s *APIServer) handleDeploy(w http.ResponseWriter, r *http.Request, functio
 		return
 	}
 
-	// Deploy to all available agents
 	agents := s.registry.GetAvailableAgents()
 	if len(agents) == 0 {
 		http.Error(w, "no agents available", http.StatusServiceUnavailable)
@@ -284,9 +363,7 @@ func (s *APIServer) handleDeploy(w http.ResponseWriter, r *http.Request, functio
 	deployed := 0
 
 	for _, agent := range agents {
-		status := AgentOperationStatus{
-			AgentID: agent.ID,
-		}
+		status := AgentOperationStatus{AgentID: agent.ID}
 
 		if err := s.agentClient.DeployFunction(agent, functionName, zipData); err != nil {
 			log.Printf("Failed to deploy to agent %s: %v", agent.ID, err)
@@ -322,7 +399,6 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		return
 	}
 
-	// Check if function exists
 	fn, exists := s.registry.GetFunction(functionName)
 	if !exists {
 		http.Error(w, "function not found", http.StatusNotFound)
@@ -330,29 +406,24 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 	}
 
 	for {
-		// Find available agent
 		agents := s.registry.GetAvailableAgents()
 
 		if len(agents) > 0 {
-			// Use first available agent
 			agent := agents[0]
 
-			// Execute on agent
 			result, err := s.agentClient.ExecuteFunction(agent, functionName, req.Args)
 			if err != nil {
 				http.Error(w, "agent communication error: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 
-			// If agent rejected because it's full (race condition or per-function limit)
 			if result.Error != "" && strings.Contains(result.Error, "at capacity") {
 				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
 					http.Error(w, result.Error, http.StatusServiceUnavailable)
 					return
 				}
-				// Otherwise wait and retry
 				log.Printf("Agent at capacity for %s, retrying...", functionName)
-				// Success or other failure - return to user
+			} else {
 				status := "success"
 				statusCode := http.StatusOK
 				if result.Error != "" {
@@ -372,22 +443,19 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 				w.WriteHeader(statusCode)
 				json.NewEncoder(w).Encode(response)
 				return
-			} else {
-				// No agents available right now
-				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
-					http.Error(w, "no agents available", http.StatusServiceUnavailable)
-					return
-				}
-				log.Printf("No agents available for %s, waiting...", functionName)
 			}
-
-			// Wait before retrying
-			select {
-			case <-r.Context().Done():
+		} else {
+			if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
+				http.Error(w, "no agents available", http.StatusServiceUnavailable)
 				return
-			case <-time.After(500 * time.Millisecond):
-				// Retry loop
 			}
+			log.Printf("No agents available for %s, waiting...", functionName)
+		}
+
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

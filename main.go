@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"flux/pkg/api"
@@ -13,6 +16,7 @@ import (
 	"flux/pkg/memory"
 	"flux/pkg/models"
 	"flux/pkg/registry"
+	scaler "flux/pkg/resource"
 )
 
 func main() {
@@ -29,13 +33,11 @@ func main() {
 		configPath = "flux.yaml"
 	}
 
-	// Load flux configuration
 	fluxConfig, err := config.LoadFluxConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load flux config: %v", err)
 	}
 
-	// Initialize Redis memory
 	redisAddr := fluxConfig.RedisAddr
 	if redisAddr == "" {
 		redisAddr = "localhost:6379"
@@ -44,44 +46,108 @@ func main() {
 	defer mem.Close()
 	log.Printf("Connected to Redis at %s", redisAddr)
 
-	// Shared registry with persistent memory
 	reg := registry.NewRegistry(mem)
 
-	// Register agents from config
+	// Register agents from config. Agents marked pre_registered are declared
+	// but not yet online — they won't receive work until health checks succeed.
 	for _, agentConfig := range fluxConfig.Agents {
-		log.Printf("Registering agent from config: %s at %s", agentConfig.ID, agentConfig.Address)
-		reg.RegisterAgent(agentConfig.ID, agentConfig.Address, agentConfig.MaxConcurrency)
+		if agentConfig.PreRegistered {
+			reg.PreRegisterAgent(agentConfig.ID, agentConfig.Address, agentConfig.MaxConcurrency, "")
+		} else {
+			reg.RegisterAgent(agentConfig.ID, agentConfig.Address, agentConfig.MaxConcurrency)
+		}
 	}
 
-	// Start health polling for agents
-	agentClient := client.NewAgentClient()
-	go startHealthPolling(reg, agentClient)
+	// Build the gRPC agent client. Use mTLS when TLS is configured.
+	var agentClient *client.AgentClient
+	if fluxConfig.TLS != nil && fluxConfig.TLS.Enabled {
+		agentClient = client.NewAgentClientTLS(fluxConfig.TLS)
+		log.Printf("gRPC client: mTLS enabled (ca=%s cert=%s)", fluxConfig.TLS.CACert, fluxConfig.TLS.CertFile)
+	} else {
+		agentClient = client.NewAgentClient()
+		log.Printf("gRPC client: plaintext (TLS not configured)")
+	}
 
-	// Start HTTP server for external API
-	apiServer := api.NewAPIServer(reg, apiKey)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go startHealthPolling(ctx, reg, agentClient)
+
+	// Start autoscaler if configured. Pass all parameters needed to construct
+	// the cloud provider — keeps the provider resource-aware (vCPUs + memory)
+	// rather than requiring the caller to specify an instance type.
+	if fluxConfig.Autoscaling != nil && fluxConfig.Autoscaling.Enabled {
+		autoscaler, err := scaler.NewAutoscaler(
+			reg,
+			agentClient,
+			fluxConfig.Autoscaling,
+			fluxConfig.AgentPort,
+			redisAddr,
+			fluxConfig.TLS,
+		)
+		if err != nil {
+			log.Fatalf("Failed to initialize autoscaler: %v", err)
+		}
+		if autoscaler != nil {
+			autoscaler.Start(ctx)
+		}
+	} else {
+		log.Printf("Autoscaling is disabled")
+	}
+
+	apiServer := api.NewAPIServer(reg, apiKey, agentClient)
 	log.Printf("HTTP API server listening on port %d", httpPort)
 	log.Printf("API Key: %s", apiKey)
 	log.Printf("Monitoring %d agents", len(fluxConfig.Agents))
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		log.Printf("Received signal %v, shutting down...", sig)
+		cancel()
+		os.Exit(0)
+	}()
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), apiServer); err != nil {
 		log.Fatalf("Failed to serve HTTP: %v", err)
 	}
 }
 
-func startHealthPolling(reg *registry.Registry, agentClient *client.AgentClient) {
+func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient *client.AgentClient) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		agents := reg.GetAllAgents()
-		for _, agent := range agents {
-			go checkAgentHealth(agent, agentClient)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Poll all agents including pre-registered ones — a successful health
+			// check on a pre-registered agent promotes it to online.
+			agents := reg.GetAllAgents()
+			for _, agent := range agents {
+				go checkAgentHealth(agent, reg, agentClient)
+			}
 		}
 	}
 }
 
-func checkAgentHealth(agent *models.Agent, agentClient *client.AgentClient) {
+func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *client.AgentClient) {
 	if err := agentClient.HealthCheck(agent); err != nil {
-		log.Printf("Agent %s health check failed: %v", agent.ID, err)
+		if agent.Status != models.AgentPreRegistered {
+			log.Printf("Agent %s health check failed: %v", agent.ID, err)
+		}
+		return
+	}
+
+	// If this agent was pre-registered, a successful health check means it is
+	// now online. Trigger a status fetch which will promote it.
+	if agent.Status == models.AgentPreRegistered {
+		status, err := agentClient.GetNodeStatus(agent)
+		if err == nil {
+			reg.UpdateNodeStatus(agent.ID, status)
+			log.Printf("Agent %s is now online (promoted from pre-registered)", agent.ID)
+		}
 	}
 }

@@ -1,9 +1,102 @@
 redis_addr: localhost:6379
 
+# agent_port is the gRPC port Flux dials on each agent (default: 50052)
+agent_port: 50052
+
+# Statically declared agents. These are registered at startup.
+# Use pre_registered: true for nodes you know are coming but haven't booted yet —
+# Flux will not route work to them until health checks succeed.
+# For nodes on the same host as Flux, just use localhost as the address.
+# Alternatively, any node can self-register via POST /nodes/register.
 agents:
-  - id: agent-1
+  - id: agent-local
     address: localhost:50052
     max_concurrency: 10
-  - id: agent-2
-    address: localhost:50053
+  - id: agent-future
+    address: 10.0.0.5:50052
     max_concurrency: 10
+    pre_registered: true   # declared but not yet running
+
+# mTLS between Flux and agents (optional but strongly recommended in production)
+# tls:
+#   enabled: true
+#   ca_cert: /etc/flux/tls/ca.pem
+#   cert:    /etc/flux/tls/flux.pem
+#   key:     /etc/flux/tls/flux-key.pem
+#   # Agent certs — uploaded to new nodes during SSH bootstrap
+#   agent_cert: /etc/flux/tls/agent.pem
+#   agent_key:  /etc/flux/tls/agent-key.pem
+
+# Autoscaling — resource-aware, not instance-type-aware.
+# The provider resolves node_resources into the cheapest matching instance type.
+autoscaling:
+  enabled: true
+
+  # name uniquely identifies this autoscaler config (required when enabled).
+  name: aws-prod
+
+  provider: aws
+
+  # Instance types this autoscaler is allowed to launch, each annotated with
+  # their vCPU and memory equivalent. When scaling up, the tightest-fit entry
+  # is selected automatically — no hardcoded catalog, no API queries.
+  # List from smallest to largest; add or remove types to control what Flux can spawn.
+  node_types:
+    - instance_type: c5.large
+      vcpus: 2
+      memory_gb: 4
+    - instance_type: c5.xlarge
+      vcpus: 4
+      memory_gb: 8
+    - instance_type: c5.2xlarge
+      vcpus: 8
+      memory_gb: 16
+    - instance_type: m5.xlarge
+      vcpus: 4
+      memory_gb: 16
+    - instance_type: r5.xlarge
+      vcpus: 4
+      memory_gb: 32
+
+  # Max concurrency assigned to each dynamically spawned agent.
+  max_concurrency: 10
+
+  # Scale up when all agents sustain CPU above this % (default: 80)
+  cpu_upper_threshold: 80
+
+  # Scale down when all agents sustain CPU below this % (default: 20) — TODO
+  cpu_lower_threshold: 20
+
+  # Seconds CPU must stay above threshold before triggering scale-up (default: 60)
+  evaluation_window_sec: 60
+
+  # Polling interval for node metrics (default: 10)
+  poll_interval_sec: 10
+
+  # Minimum seconds between consecutive scale-up events (default: 300)
+  cooldown_sec: 300
+
+  # Hard ceiling on total managed nodes (default: 10)
+  max_nodes: 10
+
+  # Minimum nodes — autoscaler will never scale below this (default: 1)
+  min_nodes: 1
+
+  aws:
+    region: us-east-1
+    ami: ami-0abcdef1234567890        # Pre-baked or standard AMI with flux-agent service
+    key_name: flux-agent-key
+    subnet_id: subnet-0123456789abcdef0
+    security_group_id: sg-0123456789abcdef0
+    iam_instance_profile: flux-agent-profile
+
+    # SSH bootstrap (optional) — if set, Flux SSHs into the node after launch
+    # to upload the agent binary and TLS certs, then starts the service.
+    # If omitted, provisioning relies entirely on user-data / the pre-baked AMI.
+    ssh_key_path: /home/user/.ssh/flux-agent-key.pem
+    ssh_user: ec2-user
+    agent_binary_path: /usr/local/bin/flux-agent   # local binary to upload
+
+    tags:
+      Environment: production
+      Team: platform

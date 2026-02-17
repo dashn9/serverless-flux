@@ -45,7 +45,7 @@ Thumbs.db
 /build/
 
 # Temporary files
-*.tmp
+*.tmp   
 *.temp
 
 flux-linux

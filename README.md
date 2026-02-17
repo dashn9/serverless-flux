@@ -289,3 +289,93 @@ curl http://localhost:7227/agents
 - `PUT /functions` - Register a new function (YAML file)
 - `PUT /deploy/{function_name}` - Deploy code to a registered function (zip file)
 - `POST /execute/{function_name}` - Execute a function
+
+## Autoscaling
+
+Flux includes an autoscaler that monitors node-level CPU pressure and automatically provisions new agent nodes when sustained load is detected.
+
+### How It Works
+
+1. **Agents report metrics** — Each agent exposes a `ReportNodeStatus` gRPC endpoint that returns live CPU%, memory%, active tasks, and uptime via [gopsutil](https://github.com/shirou/gopsutil).
+2. **Flux polls metrics** — The autoscaler periodically calls every agent to collect node status.
+3. **Sliding window evaluation** — CPU samples are tracked per agent. A scale-up is triggered only when **all** agents have sustained CPU above the configured threshold for the full evaluation window.
+4. **Cooldown** — After a scale-up, no further scaling occurs for the configured cooldown period.
+5. **History reset** — After a new node is added, the CPU history is cleared to prevent immediate re-triggers.
+
+### Configuration
+
+Add an `autoscaling` section to `flux.yaml`:
+
+```yaml
+autoscaling:
+  enabled: true
+  provider: aws                     # Cloud provider ("aws")
+  cpu_threshold: 80                 # Scale when CPU stays above this % (default: 80)
+  evaluation_window_sec: 60         # Seconds CPU must sustain above threshold (default: 60)
+  poll_interval_sec: 10             # How often to collect metrics (default: 10)
+  cooldown_sec: 300                 # Min seconds between scale-ups (default: 300)
+  max_nodes: 10                     # Upper limit of total nodes (default: 10)
+
+  aws:
+    region: us-east-1
+    instance_type: c5.xlarge        # C-class compute-optimised instances
+    ami: ami-0abcdef1234567890      # Pre-baked AMI with flux-agent installed
+    key_name: flux-agent-key
+    subnet_id: subnet-0123456789abcdef0
+    security_group_id: sg-0123456789abcdef0
+    iam_instance_profile: flux-agent-profile
+    agent_port: "50052"
+    max_concurrency: 10
+    tags:
+      Environment: production
+      Team: platform
+```
+
+### Configuration Reference
+
+| Field | Default | Description |
+|---|---|---|
+| `cpu_threshold` | `80` | CPU percentage that triggers evaluation |
+| `evaluation_window_sec` | `60` | How long CPU must stay above threshold |
+| `poll_interval_sec` | `10` | Interval between metric collections |
+| `cooldown_sec` | `300` | Minimum gap between scale-up events |
+| `max_nodes` | `10` | Maximum number of agent nodes |
+
+### AWS Provider
+
+When using `provider: aws`, the autoscaler launches EC2 instances with these security measures:
+
+- **IMDSv2 enforced** — Instance metadata requires token-based access (no IMDSv1)
+- **No public IP** — Instances launch in private subnets only
+- **Security group** — Configurable SG controls inbound/outbound traffic
+- **IAM instance profile** — Least-privilege role attached to agent nodes
+- **Resource tagging** — All instances tagged with `flux:managed=true` and custom tags
+
+The launched instance runs a user-data script that writes `agent.yaml` and starts the `flux-agent` systemd service.
+
+### Agent Node Status API
+
+The `GET /agents` endpoint now includes node metrics when available:
+
+```json
+[
+  {
+    "id": "agent-1",
+    "address": "10.0.1.50:50052",
+    "max_concurrent": 10,
+    "active_count": 3,
+    "status": "online",
+    "last_heartbeat": "2026-02-17T01:50:00Z",
+    "node_status": {
+      "cpu_percent": 45.2,
+      "memory_percent": 62.1,
+      "memory_total_mb": 16384,
+      "memory_used_mb": 10178,
+      "active_tasks": 3,
+      "max_tasks": 10,
+      "uptime_seconds": 86400,
+      "collected_at": "2026-02-17T01:50:00Z"
+    }
+  }
+]
+```
