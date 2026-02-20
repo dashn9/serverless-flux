@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
@@ -38,9 +39,16 @@ func NewAWSProvider(
 	redisAddr string,
 	tlsCfg *config.TLSConfig,
 ) (*AWSProvider, error) {
-	sdkCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(awsCfg.Region),
-	)
+	}
+	if awsCfg.AccessKeyID != "" && awsCfg.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(awsCfg.AccessKeyID, awsCfg.SecretAccessKey, ""),
+		))
+	}
+
+	sdkCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -53,7 +61,6 @@ func NewAWSProvider(
 		AgentBinaryPath: awsCfg.AgentBinaryPath,
 		AgentPort:       agentPort,
 		RedisAddr:       redisAddr,
-		MaxConcurrency:  fluxCfg.MaxConcurrency,
 		TLS:             tlsCfg,
 	})
 
@@ -85,7 +92,7 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	log.Printf("[aws] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",
 		instanceType, resources.VCPUs, resources.MemoryGB, agentID)
 
-	userData := buildAgentUserData(agentID, a.agentPort, a.redisAddr, a.fluxCfg.MaxConcurrency, a.tlsCfg)
+	userData := buildAgentUserData(agentID, a.agentPort, a.redisAddr, a.tlsCfg)
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(a.cfg.AMI),
@@ -122,12 +129,6 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		},
 	}
 
-	if a.cfg.IAMInstanceProfile != "" {
-		input.IamInstanceProfile = &types.IamInstanceProfileSpecification{
-			Name: aws.String(a.cfg.IAMInstanceProfile),
-		}
-	}
-
 	log.Printf("[aws] Launching %s — ami=%s subnet=%s sg=%s",
 		instanceType, a.cfg.AMI, a.cfg.SubnetID, a.cfg.SecurityGroupID)
 
@@ -150,10 +151,11 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	log.Printf("[aws] Instance %s ready — public=%s private=%s", instanceID, publicIP, privateIP)
 
 	return &ProvisionedNode{
-		ProviderID: instanceID,
-		AgentID:    agentID,
-		PublicIP:   publicIP,
-		PrivateIP:  privateIP,
+		ProviderID:   instanceID,
+		AgentID:      agentID,
+		InstanceType: instanceType,
+		PublicIP:     publicIP,
+		PrivateIP:    privateIP,
 	}, nil
 }
 

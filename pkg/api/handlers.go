@@ -56,11 +56,11 @@ type ExecuteResponse struct {
 type AgentInfo struct {
 	ID            string          `json:"id"`
 	Address       string          `json:"address"`
-	MaxConcurrent int32           `json:"max_concurrent"`
 	ActiveCount   int32           `json:"active_count"`
 	Status        string          `json:"status"`
 	LastHeartbeat string          `json:"last_heartbeat"`
 	ProviderID    string          `json:"provider_id,omitempty"`
+	InstanceType  string          `json:"instance_type,omitempty"`
 	NodeStatus    *NodeStatusInfo `json:"node_status,omitempty"`
 }
 
@@ -70,7 +70,6 @@ type NodeStatusInfo struct {
 	MemTotalMB  uint64  `json:"memory_total_mb"`
 	MemUsedMB   uint64  `json:"memory_used_mb"`
 	ActiveTasks int32   `json:"active_tasks"`
-	MaxTasks    int32   `json:"max_tasks"`
 	UptimeSec   int64   `json:"uptime_seconds"`
 	CollectedAt string  `json:"collected_at"`
 }
@@ -82,13 +81,11 @@ type AgentOperationStatus struct {
 }
 
 // RegisterNodeRequest is the body for POST /nodes/register.
-// An agent calls this endpoint to register itself with Flux.
-// The caller specifies its own ID, the address Flux should dial to reach it,
-// and the maximum number of concurrent executions it supports.
+// An agent calls this endpoint when it has booted and is ready to accept work.
 type RegisterNodeRequest struct {
-	ID             string `json:"id"`
-	Address        string `json:"address"`
-	MaxConcurrency int32  `json:"max_concurrency"`
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	NodeId  string `json:"node_id"`
 }
 
 func NewAPIServer(registry *registry.Registry, apiKey string, agentClient *client.AgentClient) *APIServer {
@@ -183,18 +180,18 @@ func (s *APIServer) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 			status = "online"
 		case models.AgentBusy:
 			status = "busy"
-		case models.AgentPreRegistered:
-			status = "pre-registered"
+		case models.AgentDraining:
+			status = "draining"
 		}
 
 		info := AgentInfo{
 			ID:            agent.ID,
 			Address:       agent.Address,
-			MaxConcurrent: agent.MaxConcurrent,
 			ActiveCount:   agent.ActiveCount,
 			Status:        status,
 			LastHeartbeat: agent.LastHeartbeat.Format(time.RFC3339),
 			ProviderID:    agent.ProviderID,
+			InstanceType:  agent.InstanceType,
 		}
 
 		if agent.NodeStatus != nil {
@@ -204,7 +201,6 @@ func (s *APIServer) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 				MemTotalMB:  agent.NodeStatus.MemTotalMB,
 				MemUsedMB:   agent.NodeStatus.MemUsedMB,
 				ActiveTasks: agent.NodeStatus.ActiveTasks,
-				MaxTasks:    agent.NodeStatus.MaxTasks,
 				UptimeSec:   agent.NodeStatus.UptimeSec,
 				CollectedAt: agent.NodeStatus.CollectedAt.Format(time.RFC3339),
 			}
@@ -234,12 +230,9 @@ func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "address is required", http.StatusBadRequest)
 		return
 	}
-	if req.MaxConcurrency <= 0 {
-		req.MaxConcurrency = 10
-	}
 
-	s.registry.RegisterAgent(req.ID, req.Address, req.MaxConcurrency)
-	log.Printf("[api] Node registered via HTTP: id=%s address=%s max_concurrency=%d", req.ID, req.Address, req.MaxConcurrency)
+	s.registry.RegisterAgent(req.ID, req.Address, req.NodeId, "")
+	log.Printf("[api] Node registered: id=%s address=%s node_id=%s", req.ID, req.Address, req.NodeId)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -409,10 +402,21 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		agents := s.registry.GetAvailableAgents()
 
 		if len(agents) > 0 {
+			// Route to the agent with the lowest combined CPU+mem pressure.
 			agent := agents[0]
+			for _, a := range agents[1:] {
+				if a.Pressure() < agent.Pressure() {
+					agent = a
+				}
+			}
 
+			log.Printf("[execute] %s → agent=%s (pressure=%.0f%%)", functionName, agent.ID, agent.Pressure())
+
+			start := time.Now()
 			result, err := s.agentClient.ExecuteFunction(agent, functionName, req.Args)
+			elapsed := time.Since(start).Milliseconds()
 			if err != nil {
+				log.Printf("[execute] %s failed on agent=%s in %dms: %v", functionName, agent.ID, elapsed, err)
 				http.Error(w, "agent communication error: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -422,26 +426,27 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 					http.Error(w, result.Error, http.StatusServiceUnavailable)
 					return
 				}
-				log.Printf("Agent at capacity for %s, retrying...", functionName)
+				log.Printf("[execute] %s at capacity on agent=%s, retrying...", functionName, agent.ID)
 			} else {
 				status := "success"
 				statusCode := http.StatusOK
 				if result.Error != "" {
 					status = "failed"
 					statusCode = http.StatusInternalServerError
+					log.Printf("[execute] %s failed on agent=%s in %dms: %s", functionName, agent.ID, elapsed, result.Error)
+				} else {
+					log.Printf("[execute] %s completed on agent=%s in %dms", functionName, agent.ID, elapsed)
 				}
 
-				response := ExecuteResponse{
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(statusCode)
+				json.NewEncoder(w).Encode(ExecuteResponse{
 					Status:     status,
 					Output:     string(result.Output),
 					Error:      result.Error,
 					DurationMs: result.DurationMs,
 					AgentID:    agent.ID,
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(statusCode)
-				json.NewEncoder(w).Encode(response)
+				})
 				return
 			}
 		} else {
@@ -449,7 +454,7 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 				http.Error(w, "no agents available", http.StatusServiceUnavailable)
 				return
 			}
-			log.Printf("No agents available for %s, waiting...", functionName)
+			log.Printf("[execute] %s waiting — no agents available", functionName)
 		}
 
 		select {

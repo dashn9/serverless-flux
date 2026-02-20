@@ -10,6 +10,9 @@ type ProvisionedNode struct {
 	// AgentID is the logical agent identifier registered in the flux registry.
 	AgentID string
 
+	// InstanceType is the cloud provider instance type that was launched (e.g. "c5.xlarge").
+	InstanceType string
+
 	// PublicIP is the publicly reachable IP address of the node.
 	PublicIP string
 

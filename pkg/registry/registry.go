@@ -22,18 +22,18 @@ func NewRegistry(mem memory.Memory) *Registry {
 	}
 }
 
-// RegisterAgent adds or updates an agent as fully online.
-func (r *Registry) RegisterAgent(id, address string, maxConcurrent int32) {
+// RegisterAgent registers an agent as online (self-registration via HTTP).
+func (r *Registry) RegisterAgent(id, address, providerID, instanceType string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	agent := &models.Agent{
 		ID:            id,
 		Address:       address,
-		MaxConcurrent: maxConcurrent,
-		ActiveCount:   0,
 		LastHeartbeat: time.Now(),
 		Status:        models.AgentOnline,
+		ProviderID:    providerID,
+		InstanceType:  instanceType,
 	}
 	r.agents[id] = agent
 
@@ -42,29 +42,46 @@ func (r *Registry) RegisterAgent(id, address string, maxConcurrent int32) {
 	}
 }
 
-// PreRegisterAgent records a node that has been provisioned but is not yet
-// running the agent. It will not receive work until it transitions to
-// AgentOnline (via a successful health check or explicit re-registration).
-// providerID is the cloud-instance ID (e.g. EC2 instance ID).
-func (r *Registry) PreRegisterAgent(id, address string, maxConcurrent int32, providerID string) {
+// RegisterOfflineAgent registers an autoscaler-spawned node as offline.
+// The node transitions to online once first successfully contacted.
+func (r *Registry) RegisterOfflineAgent(id, address, providerID, instanceType string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	agent := &models.Agent{
 		ID:            id,
 		Address:       address,
-		MaxConcurrent: maxConcurrent,
-		ActiveCount:   0,
 		LastHeartbeat: time.Now(),
-		Status:        models.AgentPreRegistered,
+		Status:        models.AgentOffline,
 		ProviderID:    providerID,
+		InstanceType:  instanceType,
 	}
 	r.agents[id] = agent
 
-	log.Printf("[registry] Agent %s pre-registered at %s (provider: %s)", id, address, providerID)
-
 	if err := r.memory.SaveAgent(agent); err != nil {
-		log.Printf("Failed to persist pre-registered agent %s: %v", id, err)
+		log.Printf("Failed to persist agent %s: %v", id, err)
+	}
+}
+
+// DeregisterAgent removes an agent from the registry and persistent storage.
+func (r *Registry) DeregisterAgent(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.agents, id)
+	if err := r.memory.DeleteAgent(id); err != nil {
+		log.Printf("Failed to delete agent %s from storage: %v", id, err)
+	}
+}
+
+// SetDraining marks an agent as draining so no new work is routed to it.
+func (r *Registry) SetDraining(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if agent, ok := r.agents[id]; ok {
+		agent.Status = models.AgentDraining
+		log.Printf("[registry] Agent %s set to draining", id)
 	}
 }
 
@@ -75,7 +92,10 @@ func (r *Registry) UpdateHeartbeat(id string, activeCount int32) {
 	if agent, ok := r.agents[id]; ok {
 		agent.LastHeartbeat = time.Now()
 		agent.ActiveCount = activeCount
-		agent.Status = models.AgentOnline
+		// Don't change draining agents via heartbeat.
+		if agent.Status == models.AgentOffline {
+			agent.Status = models.AgentOnline
+		}
 
 		if err := r.memory.SaveAgent(agent); err != nil {
 			log.Printf("Failed to persist agent heartbeat %s: %v", id, err)
@@ -83,20 +103,21 @@ func (r *Registry) UpdateHeartbeat(id string, activeCount int32) {
 	}
 }
 
-// UpdateNodeStatus stores the latest node telemetry and promotes a
-// pre-registered agent to AgentOnline on first successful contact.
+// UpdateNodeStatus stores the latest node telemetry.
+// Promotes an offline agent to online on first successful contact.
 func (r *Registry) UpdateNodeStatus(id string, status *models.NodeStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if agent, ok := r.agents[id]; ok {
-		if agent.Status == models.AgentPreRegistered {
-			log.Printf("[registry] Agent %s promoted from pre-registered to online", id)
-		}
 		agent.NodeStatus = status
 		agent.ActiveCount = status.ActiveTasks
 		agent.LastHeartbeat = status.CollectedAt
-		agent.Status = models.AgentOnline
+		// Promote offline → online on first contact. Draining stays draining.
+		if agent.Status == models.AgentOffline {
+			log.Printf("[registry] Agent %s came online", id)
+			agent.Status = models.AgentOnline
+		}
 	}
 }
 
@@ -108,15 +129,15 @@ func (r *Registry) GetAgent(id string) (*models.Agent, bool) {
 	return agent, ok
 }
 
-// GetAvailableAgents returns online agents that have capacity for more work.
-// Pre-registered agents are excluded.
+// GetAvailableAgents returns agents that are fully online and accepting work.
+// Offline, draining, and busy agents are excluded.
 func (r *Registry) GetAvailableAgents() []*models.Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var available []*models.Agent
 	for _, agent := range r.agents {
-		if agent.Status == models.AgentOnline && agent.ActiveCount < agent.MaxConcurrent {
+		if agent.Status == models.AgentOnline {
 			available = append(available, agent)
 		}
 	}
@@ -124,7 +145,6 @@ func (r *Registry) GetAvailableAgents() []*models.Agent {
 }
 
 // GetOnlineAgents returns all agents with AgentOnline status.
-// Used by the autoscaler for metrics polling (excludes pre-registered).
 func (r *Registry) GetOnlineAgents() []*models.Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -136,6 +156,21 @@ func (r *Registry) GetOnlineAgents() []*models.Agent {
 		}
 	}
 	return online
+}
+
+// GetOfflineAgents returns managed (autoscaler-spawned) agents that are offline.
+// Used by the autoscaler to probe newly booted nodes for promotion.
+func (r *Registry) GetOfflineAgents() []*models.Agent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var offline []*models.Agent
+	for _, agent := range r.agents {
+		if agent.Status == models.AgentOffline && agent.ProviderID != "" {
+			offline = append(offline, agent)
+		}
+	}
+	return offline
 }
 
 // GetAllAgents returns every registered agent regardless of status.

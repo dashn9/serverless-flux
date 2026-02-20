@@ -26,9 +26,8 @@ type BootstrapConfig struct {
 
 	// Agent runtime configuration written to the remote node.
 	// AgentID is not stored here — it is taken from ProvisionedNode at bootstrap time.
-	AgentPort      int
-	RedisAddr      string
-	MaxConcurrency int32
+	AgentPort int
+	RedisAddr string
 
 	// TLS — when non-nil and Enabled, CA + agent cert/key are deployed before
 	// the agent service is started.
@@ -98,7 +97,7 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 	}
 
 	// Write agent.yaml on the remote node using node.AgentID from the provisioned instance.
-	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, b.cfg.MaxConcurrency, b.cfg.TLS)
+	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, b.cfg.TLS)
 	writeCmd := fmt.Sprintf("cat > /opt/flux-agent/agent.yaml <<'EOF'\n%sEOF", agentYAML)
 	if err := b.run(client, writeCmd); err != nil {
 		return fmt.Errorf("write agent.yaml: %w", err)

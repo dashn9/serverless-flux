@@ -218,7 +218,6 @@ func (c *AgentClient) GetNodeStatus(agent *models.Agent) (*models.NodeStatus, er
 		MemTotalMB:  resp.MemoryTotalMb,
 		MemUsedMB:   resp.MemoryUsedMb,
 		ActiveTasks: resp.ActiveTasks,
-		MaxTasks:    resp.MaxTasks,
 		UptimeSec:   resp.UptimeSeconds,
 		CollectedAt: time.Now(),
 	}, nil

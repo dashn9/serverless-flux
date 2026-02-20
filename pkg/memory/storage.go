@@ -13,6 +13,7 @@ type Memory interface {
 	SaveAgent(agent *models.Agent) error
 	GetAgent(id string) (*models.Agent, error)
 	GetAllAgents() ([]*models.Agent, error)
+	DeleteAgent(id string) error
 
 	// Close the storage connection
 	Close() error

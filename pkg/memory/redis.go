@@ -115,6 +115,10 @@ func (r *RedisMemory) GetAgent(id string) (*models.Agent, error) {
 	return &agent, nil
 }
 
+func (r *RedisMemory) DeleteAgent(id string) error {
+	return r.client.Del(r.ctx, fmt.Sprintf("agent:%s", id)).Err()
+}
+
 func (r *RedisMemory) GetAllAgents() ([]*models.Agent, error) {
 	keys, err := r.client.Keys(r.ctx, "agent:*").Result()
 	if err != nil {

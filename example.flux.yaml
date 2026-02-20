@@ -3,20 +3,6 @@ redis_addr: localhost:6379
 # agent_port is the gRPC port Flux dials on each agent (default: 50052)
 agent_port: 50052
 
-# Statically declared agents. These are registered at startup.
-# Use pre_registered: true for nodes you know are coming but haven't booted yet —
-# Flux will not route work to them until health checks succeed.
-# For nodes on the same host as Flux, just use localhost as the address.
-# Alternatively, any node can self-register via POST /nodes/register.
-agents:
-  - id: agent-local
-    address: localhost:50052
-    max_concurrency: 10
-  - id: agent-future
-    address: 10.0.0.5:50052
-    max_concurrency: 10
-    pre_registered: true   # declared but not yet running
-
 # mTLS between Flux and agents (optional but strongly recommended in production)
 # tls:
 #   enabled: true
@@ -58,9 +44,6 @@ autoscaling:
       vcpus: 4
       memory_gb: 32
 
-  # Max concurrency assigned to each dynamically spawned agent.
-  max_concurrency: 10
-
   # Scale up when all agents sustain CPU above this % (default: 80)
   cpu_upper_threshold: 80
 
@@ -88,7 +71,11 @@ autoscaling:
     key_name: flux-agent-key
     subnet_id: subnet-0123456789abcdef0
     security_group_id: sg-0123456789abcdef0
-    iam_instance_profile: flux-agent-profile
+
+    # Static credentials — optional.
+    # When omitted, the default chain is used (env vars, ~/.aws/credentials, instance profile).
+    # access_key_id: AKIAIOSFODNN7EXAMPLE
+    # secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
     # SSH bootstrap (optional) — if set, Flux SSHs into the node after launch
     # to upload the agent binary and TLS certs, then starts the service.

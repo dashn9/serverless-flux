@@ -10,18 +10,8 @@ import (
 type FluxConfig struct {
 	RedisAddr   string           `yaml:"redis_addr"`
 	AgentPort   int              `yaml:"agent_port"`
-	Agents      []AgentConfig    `yaml:"agents"`
 	TLS         *TLSConfig       `yaml:"tls,omitempty"`
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
-}
-
-type AgentConfig struct {
-	ID             string `yaml:"id"`
-	Address        string `yaml:"address"`
-	MaxConcurrency int32  `yaml:"max_concurrency"`
-	// PreRegistered marks this agent as declared-but-not-yet-online.
-	// Flux will not route work to it until health checks succeed.
-	PreRegistered bool `yaml:"pre_registered,omitempty"`
 }
 
 // TLSConfig enables mTLS between Flux and Agents.
@@ -80,9 +70,6 @@ type AutoscaleConfig struct {
 	// At least one entry is required when autoscaling is enabled.
 	NodeTypes []NodeTypeConfig `yaml:"node_types"`
 
-	// MaxConcurrency is the max_concurrency to assign to dynamically spawned agents.
-	MaxConcurrency int32 `yaml:"max_concurrency"`
-
 	// AWS-specific configuration.
 	AWS *AWSConfig `yaml:"aws,omitempty"`
 }
@@ -106,8 +93,8 @@ type AWSConfig struct {
 	SubnetID        string `yaml:"subnet_id"`
 	SecurityGroupID string `yaml:"security_group_id"`
 
-	// IAM instance profile for the agent nodes.
-	IAMInstanceProfile string `yaml:"iam_instance_profile"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
 
 	// SSHKeyPath is the local path to the private key (.pem) used to SSH into
 	// newly provisioned instances for the bootstrap step.
@@ -172,9 +159,6 @@ func LoadFluxConfig(path string) (*FluxConfig, error) {
 		}
 		if a.MinNodes == 0 {
 			a.MinNodes = 1
-		}
-		if a.MaxConcurrency == 0 {
-			a.MaxConcurrency = 10
 		}
 		if a.Enabled && len(a.NodeTypes) == 0 {
 			return nil, fmt.Errorf("autoscaling.node_types must have at least one entry when autoscaling is enabled")

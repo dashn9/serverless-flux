@@ -48,16 +48,6 @@ func main() {
 
 	reg := registry.NewRegistry(mem)
 
-	// Register agents from config. Agents marked pre_registered are declared
-	// but not yet online — they won't receive work until health checks succeed.
-	for _, agentConfig := range fluxConfig.Agents {
-		if agentConfig.PreRegistered {
-			reg.PreRegisterAgent(agentConfig.ID, agentConfig.Address, agentConfig.MaxConcurrency, "")
-		} else {
-			reg.RegisterAgent(agentConfig.ID, agentConfig.Address, agentConfig.MaxConcurrency)
-		}
-	}
-
 	// Build the gRPC agent client. Use mTLS when TLS is configured.
 	var agentClient *client.AgentClient
 	if fluxConfig.TLS != nil && fluxConfig.TLS.Enabled {
@@ -73,9 +63,7 @@ func main() {
 
 	go startHealthPolling(ctx, reg, agentClient)
 
-	// Start autoscaler if configured. Pass all parameters needed to construct
-	// the cloud provider — keeps the provider resource-aware (vCPUs + memory)
-	// rather than requiring the caller to specify an instance type.
+	// Start autoscaler if configured
 	if fluxConfig.Autoscaling != nil && fluxConfig.Autoscaling.Enabled {
 		autoscaler, err := scaler.NewAutoscaler(
 			reg,
@@ -97,8 +85,6 @@ func main() {
 
 	apiServer := api.NewAPIServer(reg, apiKey, agentClient)
 	log.Printf("HTTP API server listening on port %d", httpPort)
-	log.Printf("API Key: %s", apiKey)
-	log.Printf("Monitoring %d agents", len(fluxConfig.Agents))
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -135,19 +121,18 @@ func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient
 
 func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *client.AgentClient) {
 	if err := agentClient.HealthCheck(agent); err != nil {
-		if agent.Status != models.AgentPreRegistered {
+		if agent.Status != models.AgentOffline {
 			log.Printf("Agent %s health check failed: %v", agent.ID, err)
 		}
 		return
 	}
 
-	// If this agent was pre-registered, a successful health check means it is
-	// now online. Trigger a status fetch which will promote it.
-	if agent.Status == models.AgentPreRegistered {
+	// If this agent was offline, a successful health check means it is
+	// now reachable — fetch status to promote it to online.
+	if agent.Status == models.AgentOffline {
 		status, err := agentClient.GetNodeStatus(agent)
 		if err == nil {
 			reg.UpdateNodeStatus(agent.ID, status)
-			log.Printf("Agent %s is now online (promoted from pre-registered)", agent.ID)
 		}
 	}
 }
