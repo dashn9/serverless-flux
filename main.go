@@ -54,7 +54,8 @@ func main() {
 
 	go startHealthPolling(ctx, reg, agentClient)
 
-	// Start autoscaler if configured
+	// Start autoscaler if configured.
+	var scaleHint chan<- struct{}
 	if fluxConfig.Autoscaling != nil && fluxConfig.Autoscaling.Enabled {
 		autoscaler, err := scaler.NewAutoscaler(
 			reg,
@@ -62,19 +63,20 @@ func main() {
 			fluxConfig.Autoscaling,
 			fluxConfig.AgentPort,
 			redisAddr,
-			fluxConfig.AgentGRPC,
+			fluxConfig.GRPC.Agent,
 		)
 		if err != nil {
 			log.Fatalf("Failed to initialize autoscaler: %v", err)
 		}
 		if autoscaler != nil {
 			autoscaler.Start(ctx)
+			scaleHint = autoscaler.ScaleHintCh()
 		}
 	} else {
 		log.Printf("Autoscaling is disabled")
 	}
 
-	apiServer := api.NewAPIServer(reg, fluxConfig.APIKey, agentClient)
+	apiServer := api.NewAPIServer(reg, fluxConfig.APIKey, agentClient, scaleHint)
 	log.Printf("HTTP API server listening on port %d", httpPort)
 
 	go func() {

@@ -24,6 +24,7 @@ type APIServer struct {
 	registry    *registry.Registry
 	apiKey      string
 	agentClient *client.AgentClient
+	scaleHint   chan<- struct{}
 }
 
 type FunctionYAML struct {
@@ -88,11 +89,12 @@ type RegisterNodeRequest struct {
 	NodeId  string `json:"node_id"`
 }
 
-func NewAPIServer(registry *registry.Registry, apiKey string, agentClient *client.AgentClient) *APIServer {
+func NewAPIServer(registry *registry.Registry, apiKey string, agentClient *client.AgentClient, scaleHint chan<- struct{}) *APIServer {
 	return &APIServer{
 		registry:    registry,
 		apiKey:      apiKey,
 		agentClient: agentClient,
+		scaleHint:   scaleHint,
 	}
 }
 
@@ -399,62 +401,68 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 	}
 
 	for {
-		agents := s.registry.GetAvailableAgents()
+		// Pick the available agent with the most headroom that can fit the function.
+		var best *models.Agent
+		for _, a := range s.registry.GetAvailableAgents() {
+			if !a.CanFit(fn) {
+				continue
+			}
+			if best == nil || a.AvailableScore() > best.AvailableScore() {
+				best = a
+			}
+		}
 
-		if len(agents) > 0 {
-			// Route to the agent with the lowest combined CPU+mem pressure.
-			agent := agents[0]
-			for _, a := range agents[1:] {
-				if a.Pressure() < agent.Pressure() {
-					agent = a
+		if best == nil {
+			// No agent has the resources to run this function — signal autoscaler
+			// (if enabled) and return 429 so the caller can retry later.
+			if s.scaleHint != nil {
+				select {
+				case s.scaleHint <- struct{}{}:
+				default:
 				}
 			}
+			http.Error(w, "no agents available with sufficient resources", http.StatusTooManyRequests)
+			return
+		}
 
-			log.Printf("[execute] %s → agent=%s (pressure=%.0f%%)", functionName, agent.ID, agent.Pressure())
+		log.Printf("[execute] %s → agent=%s (score=%.0f)", functionName, best.ID, best.AvailableScore())
 
-			start := time.Now()
-			result, err := s.agentClient.ExecuteFunction(agent, functionName, req.Args)
-			elapsed := time.Since(start).Milliseconds()
-			if err != nil {
-				log.Printf("[execute] %s failed on agent=%s in %dms: %v", functionName, agent.ID, elapsed, err)
-				http.Error(w, "agent communication error: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
+		start := time.Now()
+		result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args)
+		elapsed := time.Since(start).Milliseconds()
+		if err != nil {
+			log.Printf("[execute] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
+			http.Error(w, "agent communication error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-			if result.Error != "" && strings.Contains(result.Error, "at capacity") {
-				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
-					http.Error(w, result.Error, http.StatusServiceUnavailable)
-					return
-				}
-				log.Printf("[execute] %s at capacity on agent=%s, retrying...", functionName, agent.ID)
-			} else {
-				status := "success"
-				statusCode := http.StatusOK
-				if result.Error != "" {
-					status = "failed"
-					statusCode = http.StatusInternalServerError
-					log.Printf("[execute] %s failed on agent=%s in %dms: %s", functionName, agent.ID, elapsed, result.Error)
-				} else {
-					log.Printf("[execute] %s completed on agent=%s in %dms", functionName, agent.ID, elapsed)
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(statusCode)
-				json.NewEncoder(w).Encode(ExecuteResponse{
-					Status:     status,
-					Output:     string(result.Output),
-					Error:      result.Error,
-					DurationMs: result.DurationMs,
-					AgentID:    agent.ID,
-				})
-				return
-			}
-		} else {
+		if result.Error != "" && strings.Contains(result.Error, "at capacity") {
 			if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
-				http.Error(w, "no agents available", http.StatusServiceUnavailable)
+				http.Error(w, result.Error, http.StatusServiceUnavailable)
 				return
 			}
-			log.Printf("[execute] %s waiting — no agents available", functionName)
+			log.Printf("[execute] %s at capacity on agent=%s, retrying...", functionName, best.ID)
+		} else {
+			status := "success"
+			statusCode := http.StatusOK
+			if result.Error != "" {
+				status = "failed"
+				statusCode = http.StatusInternalServerError
+				log.Printf("[execute] %s failed on agent=%s in %dms: %s", functionName, best.ID, elapsed, result.Error)
+			} else {
+				log.Printf("[execute] %s completed on agent=%s in %dms", functionName, best.ID, elapsed)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(statusCode)
+			json.NewEncoder(w).Encode(ExecuteResponse{
+				Status:     status,
+				Output:     string(result.Output),
+				Error:      result.Error,
+				DurationMs: result.DurationMs,
+				AgentID:    best.ID,
+			})
+			return
 		}
 
 		select {

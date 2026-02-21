@@ -73,6 +73,8 @@ type Autoscaler struct {
 
 	lastScaleUp   time.Time
 	lastScaleDown time.Time
+
+	scaleHint chan struct{} // receives a signal when a request cannot be served
 }
 
 type pressureSample struct {
@@ -120,7 +122,14 @@ func NewAutoscaler(
 		cfg:             cfg,
 		agentPort:       agentPort,
 		pressureHistory: make(map[string][]pressureSample),
+		scaleHint:       make(chan struct{}, 1),
 	}, nil
+}
+
+// ScaleHintCh returns the send side of the scale hint channel.
+// The API layer sends to it (non-blocking) when a request cannot be served.
+func (a *Autoscaler) ScaleHintCh() chan<- struct{} {
+	return a.scaleHint
 }
 
 // Start begins the monitoring loop in a background goroutine.
@@ -145,9 +154,17 @@ func (a *Autoscaler) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				a.poll(ctx)
+			case <-a.scaleHint:
+				a.handleScaleHint(ctx)
 			}
 		}
 	}()
+}
+
+// handleScaleHint responds to a demand-driven scale signal from the API layer.
+func (a *Autoscaler) handleScaleHint(ctx context.Context) {
+	log.Printf("[autoscaler] Scale hint received")
+	a.tryScaleUp(ctx)
 }
 
 // poll fetches metrics from all online agents, probes offline agents for
@@ -253,6 +270,54 @@ func (a *Autoscaler) shouldScale() ScaleDirection {
 	return ScaleDirectionNeutral
 }
 
+// tryScaleUp attempts a scale-up, respecting cooldown and max-node limits.
+// Used by both the regular poll cycle and demand-driven hints.
+func (a *Autoscaler) tryScaleUp(ctx context.Context) {
+	cooldown := time.Duration(a.cfg.CooldownSec) * time.Second
+	if time.Since(a.lastScaleUp) < cooldown {
+		log.Printf("[autoscaler] Scale-up skipped: cooldown active (%.0fs remaining)",
+			(cooldown - time.Since(a.lastScaleUp)).Seconds())
+		return
+	}
+
+	allAgents := a.registry.GetAllAgents()
+
+	if len(allAgents) < a.cfg.MaxNodes {
+		a.lastScaleUp = time.Now()
+		a.spawnNode(ctx, smallestNodeResources(a.cfg.NodeTypes))
+		return
+	}
+
+	// At max nodes — drain and replace an idle managed node with the largest type.
+	maxType := largestInstanceType(a.cfg.NodeTypes)
+	maxRes := largestNodeResources(a.cfg.NodeTypes)
+
+	var candidate *models.Agent
+	for _, ag := range allAgents {
+		if ag.ProviderID != "" && ag.InstanceType != maxType && ag.ActiveCount == 0 {
+			candidate = ag
+			break
+		}
+	}
+	if candidate == nil {
+		log.Printf("[autoscaler] At max nodes (%d/%d), all managed nodes are max hardware or busy",
+			len(allAgents), a.cfg.MaxNodes)
+		return
+	}
+
+	log.Printf("[autoscaler] At max nodes — upgrading %s (%s → %s)",
+		candidate.ID, candidate.InstanceType, maxType)
+
+	a.lastScaleUp = time.Now()
+	a.registry.SetDraining(candidate.ID)
+
+	cid, cpid, caddr := candidate.ID, candidate.ProviderID, candidate.Address
+	go func() {
+		a.drainAndTerminate(ctx, cid, caddr, cpid)
+		a.spawnNode(ctx, maxRes)
+	}()
+}
+
 func (a *Autoscaler) checkAndTriggerScale(ctx context.Context) {
 	dir := a.shouldScale()
 	if dir == ScaleDirectionNeutral {
@@ -260,49 +325,10 @@ func (a *Autoscaler) checkAndTriggerScale(ctx context.Context) {
 	}
 
 	cooldown := time.Duration(a.cfg.CooldownSec) * time.Second
-	allAgents := a.registry.GetAllAgents()
 
 	if dir == ScaleDirectionUp {
-		if time.Since(a.lastScaleUp) < cooldown {
-			log.Printf("[autoscaler] Scale-up skipped: cooldown active (%.0fs remaining)",
-				(cooldown - time.Since(a.lastScaleUp)).Seconds())
-			return
-		}
-
-		if len(allAgents) < a.cfg.MaxNodes {
-			a.lastScaleUp = time.Now()
-			a.spawnNode(ctx, smallestNodeResources(a.cfg.NodeTypes))
-			return
-		}
-
-		// At max nodes — drain and replace an idle managed node with the largest type.
-		maxType := largestInstanceType(a.cfg.NodeTypes)
-		maxRes := largestNodeResources(a.cfg.NodeTypes)
-
-		var candidate *models.Agent
-		for _, ag := range allAgents {
-			if ag.ProviderID != "" && ag.InstanceType != maxType && ag.ActiveCount == 0 {
-				candidate = ag
-				break
-			}
-		}
-		if candidate == nil {
-			log.Printf("[autoscaler] At max nodes (%d/%d), all managed nodes are max hardware or busy",
-				len(allAgents), a.cfg.MaxNodes)
-			return
-		}
-
-		log.Printf("[autoscaler] At max nodes — upgrading %s (%s → %s)",
-			candidate.ID, candidate.InstanceType, maxType)
-
-		a.lastScaleUp = time.Now()
-		a.registry.SetDraining(candidate.ID)
-
-		cid, cpid, caddr := candidate.ID, candidate.ProviderID, candidate.Address
-		go func() {
-			a.drainAndTerminate(ctx, cid, caddr, cpid)
-			a.spawnNode(ctx, maxRes)
-		}()
+		a.logPressureSummary("up")
+		a.tryScaleUp(ctx)
 		return
 	}
 
@@ -312,6 +338,8 @@ func (a *Autoscaler) checkAndTriggerScale(ctx context.Context) {
 			(cooldown - time.Since(a.lastScaleDown)).Seconds())
 		return
 	}
+
+	allAgents := a.registry.GetAllAgents()
 
 	if len(allAgents) <= a.cfg.MinNodes {
 		log.Printf("[autoscaler] Scale-down skipped: already at min nodes (%d/%d)",

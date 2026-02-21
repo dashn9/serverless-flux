@@ -59,6 +59,39 @@ func (a *Agent) Pressure() float64 {
 	return a.NodeStatus.CPUPercent + a.NodeStatus.MemPercent
 }
 
+// CanFit reports whether this agent has enough free resources to run fn.
+// Agents with no status yet are assumed capable (optimistic — they may be booting).
+func (a *Agent) CanFit(fn *Function) bool {
+	if a.NodeStatus == nil {
+		return true
+	}
+	if fn.MemoryMB > 0 && a.NodeStatus.MemTotalMB > 0 {
+		availMB := a.NodeStatus.MemTotalMB - a.NodeStatus.MemUsedMB
+		if uint64(fn.MemoryMB) > availMB {
+			return false
+		}
+	}
+	// Treat CPU >= 90% as saturated regardless of millicores requested.
+	if fn.CPUMillicores > 0 && a.NodeStatus.CPUPercent >= 90 {
+		return false
+	}
+	return true
+}
+
+// AvailableScore returns a score (higher = more headroom) used to pick the
+// best agent when multiple agents can fit a function's requirements.
+func (a *Agent) AvailableScore() float64 {
+	if a.NodeStatus == nil {
+		return 50 // unknown — moderate score
+	}
+	cpuAvail := 100 - a.NodeStatus.CPUPercent
+	memAvail := float64(0)
+	if a.NodeStatus.MemTotalMB > 0 {
+		memAvail = float64(a.NodeStatus.MemTotalMB-a.NodeStatus.MemUsedMB) / float64(a.NodeStatus.MemTotalMB) * 100
+	}
+	return cpuAvail + memAvail
+}
+
 // NodeStatus holds the latest resource metrics reported by an agent node.
 type NodeStatus struct {
 	AgentID     string

@@ -11,17 +11,16 @@ grpc:
   insecure: true
 # grpc:
 #   insecure: false
-#   ca_cert: /etc/flux/tls/ca.pem
-#   cert:    /etc/flux/tls/flux.pem
-#   key:     /etc/flux/tls/flux-key.pem
-
-# Local paths on the Flux host to the agent TLS cert files.
-# When set, these are uploaded to each node during SSH bootstrap
-# and referenced in the agent.yaml written to the node.
-# agent_grpc:
-#   ca_cert: /etc/flux/tls/agent-ca.pem
-#   cert:    /etc/flux/tls/agent.pem
-#   key:     /etc/flux/tls/agent-key.pem
+#   ca_cert: certs/ca.pem
+#   cert:    certs/flux.pem
+#   key:     certs/flux.key
+#   # Local paths on the Flux host to the agent TLS cert files.
+#   # When set, these are uploaded to each node during SSH bootstrap
+#   # and referenced in the agent.yaml written to the node.
+#   agent:
+#     ca_cert: certs/ca.pem
+#     cert:    certs/agent.pem
+#     key:     certs/agent.key
 
 # Autoscaling — resource-aware, not instance-type-aware.
 # The provider resolves node_resources into the cheapest matching instance type.

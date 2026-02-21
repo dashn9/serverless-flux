@@ -12,17 +12,17 @@ type FluxConfig struct {
 	RedisAddr   string           `yaml:"redis_addr"`
 	AgentPort   int              `yaml:"agent_port"`
 	GRPC        *GRPCConfig      `yaml:"grpc"`
-	AgentGRPC   *AgentGRPCConfig `yaml:"agent_grpc,omitempty"`
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
 }
 
 // GRPCConfig controls how Flux dials agents over gRPC.
 // TLS is required unless Insecure is explicitly set to true.
 type GRPCConfig struct {
-	Insecure bool   `yaml:"insecure"`
-	CACert   string `yaml:"ca_cert,omitempty"`
-	CertFile string `yaml:"cert,omitempty"`
-	KeyFile  string `yaml:"key,omitempty"`
+	Insecure bool             `yaml:"insecure"`
+	CACert   string           `yaml:"ca_cert,omitempty"`
+	CertFile string           `yaml:"cert,omitempty"`
+	KeyFile  string           `yaml:"key,omitempty"`
+	Agent    *AgentGRPCConfig `yaml:"agent,omitempty"`
 }
 
 // AgentGRPCConfig holds the LOCAL paths (on the Flux host) to the agent's

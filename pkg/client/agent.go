@@ -94,6 +94,7 @@ func loadFluxTLSCredentials(grpcCfg *config.GRPCConfig) (credentials.TransportCr
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
+		ServerName:   "flux-agent", // agents use a fixed CN so dynamic IPs don't break verification
 	}
 	return credentials.NewTLS(cfg), nil
 }
