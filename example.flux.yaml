@@ -1,17 +1,27 @@
+api_key: your-secret-key-here
+
 redis_addr: localhost:6379
 
 # agent_port is the gRPC port Flux dials on each agent (default: 50052)
 agent_port: 50052
 
-# mTLS between Flux and agents (optional but strongly recommended in production)
-# tls:
-#   enabled: true
+# gRPC transport security — how Flux dials agents.
+# Set insecure: true for development; provide certs for production.
+grpc:
+  insecure: true
+# grpc:
+#   insecure: false
 #   ca_cert: /etc/flux/tls/ca.pem
 #   cert:    /etc/flux/tls/flux.pem
 #   key:     /etc/flux/tls/flux-key.pem
-#   # Agent certs — uploaded to new nodes during SSH bootstrap
-#   agent_cert: /etc/flux/tls/agent.pem
-#   agent_key:  /etc/flux/tls/agent-key.pem
+
+# Local paths on the Flux host to the agent TLS cert files.
+# When set, these are uploaded to each node during SSH bootstrap
+# and referenced in the agent.yaml written to the node.
+# agent_grpc:
+#   ca_cert: /etc/flux/tls/agent-ca.pem
+#   cert:    /etc/flux/tls/agent.pem
+#   key:     /etc/flux/tls/agent-key.pem
 
 # Autoscaling — resource-aware, not instance-type-aware.
 # The provider resolves node_resources into the cheapest matching instance type.
@@ -82,7 +92,7 @@ autoscaling:
     # If omitted, provisioning relies entirely on user-data / the pre-baked AMI.
     ssh_key_path: /home/user/.ssh/flux-agent-key.pem
     ssh_user: ec2-user
-    agent_binary_path: /usr/local/bin/flux-agent   # local binary to upload
+    agent_version: "0.1.0"   # fetched from GitHub Releases as a .deb
 
     tags:
       Environment: production

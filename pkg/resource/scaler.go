@@ -89,7 +89,7 @@ func NewAutoscaler(
 	cfg *config.AutoscaleConfig,
 	agentPort int,
 	redisAddr string,
-	tlsCfg *config.TLSConfig,
+	agentGRPC *config.AgentGRPCConfig,
 ) (*Autoscaler, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
@@ -103,7 +103,7 @@ func NewAutoscaler(
 			log.Printf("[autoscaler] AWS provider selected but no AWS config provided, disabling")
 			return nil, nil
 		}
-		p, err := NewAWSProvider(cfg.AWS, cfg, agentPort, redisAddr, tlsCfg)
+		p, err := NewAWSProvider(cfg.AWS, cfg, agentPort, redisAddr, agentGRPC)
 		if err != nil {
 			return nil, err
 		}

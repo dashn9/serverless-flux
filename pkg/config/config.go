@@ -8,22 +8,30 @@ import (
 )
 
 type FluxConfig struct {
+	APIKey      string           `yaml:"api_key"`
 	RedisAddr   string           `yaml:"redis_addr"`
 	AgentPort   int              `yaml:"agent_port"`
-	TLS         *TLSConfig       `yaml:"tls,omitempty"`
+	GRPC        *GRPCConfig      `yaml:"grpc"`
+	AgentGRPC   *AgentGRPCConfig `yaml:"agent_grpc,omitempty"`
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
 }
 
-// TLSConfig enables mTLS between Flux and Agents.
-type TLSConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	CACert   string `yaml:"ca_cert"` // Path to CA certificate
-	CertFile string `yaml:"cert"`    // Path to Flux certificate
-	KeyFile  string `yaml:"key"`     // Path to Flux private key
+// GRPCConfig controls how Flux dials agents over gRPC.
+// TLS is required unless Insecure is explicitly set to true.
+type GRPCConfig struct {
+	Insecure bool   `yaml:"insecure"`
+	CACert   string `yaml:"ca_cert,omitempty"`
+	CertFile string `yaml:"cert,omitempty"`
+	KeyFile  string `yaml:"key,omitempty"`
+}
 
-	// Agent certificates — deployed to new nodes during provisioning.
-	AgentCert string `yaml:"agent_cert"` // Path to agent certificate
-	AgentKey  string `yaml:"agent_key"`  // Path to agent private key
+// AgentGRPCConfig holds the LOCAL paths (on the Flux host) to the agent's
+// TLS cert files. During SSH bootstrap these are uploaded to each node
+// alongside agent.yaml. The agent.yaml references the standard on-node paths.
+type AgentGRPCConfig struct {
+	CACert   string `yaml:"ca_cert"`
+	CertFile string `yaml:"cert"`
+	KeyFile  string `yaml:"key"`
 }
 
 // AutoscaleConfig controls the autoscaling behaviour.
@@ -75,11 +83,7 @@ type AutoscaleConfig struct {
 }
 
 // NodeTypeConfig maps a cloud provider instance type to its resource equivalents.
-// The operator lists every instance type the autoscaler is allowed to launch,
-// annotated with how many vCPUs and how much memory it provides.
-// When scaling up, the autoscaler picks the tightest-fit entry from this list.
 type NodeTypeConfig struct {
-	// InstanceType is the cloud-provider identifier (e.g. "c5.xlarge" on AWS).
 	InstanceType string  `yaml:"instance_type"`
 	VCPUs        int     `yaml:"vcpus"`
 	MemoryGB     float64 `yaml:"memory_gb"`
@@ -98,16 +102,15 @@ type AWSConfig struct {
 
 	// SSHKeyPath is the local path to the private key (.pem) used to SSH into
 	// newly provisioned instances for the bootstrap step.
-	// If empty, bootstrap falls back to user-data only.
+	// If empty, provisioning relies entirely on user-data.
 	SSHKeyPath string `yaml:"ssh_key_path,omitempty"`
 
 	// SSHUser is the OS user to log in as during bootstrap (default: "ec2-user").
 	SSHUser string `yaml:"ssh_user,omitempty"`
 
-	// AgentBinaryPath is the local path to the compiled agent binary to upload
-	// during SSH bootstrap. If empty, bootstrap assumes the binary is already
-	// present on the AMI (e.g. pre-baked) or installed via user-data.
-	AgentBinaryPath string `yaml:"agent_binary_path,omitempty"`
+	// AgentVersion is the flux-agent release version to fetch from GitHub
+	// Releases and install as a .deb on newly provisioned nodes (e.g. "0.1.0").
+	AgentVersion string `yaml:"agent_version,omitempty"`
 }
 
 func LoadFluxConfig(path string) (*FluxConfig, error) {
@@ -119,6 +122,17 @@ func LoadFluxConfig(path string) (*FluxConfig, error) {
 	var config FluxConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, err
+	}
+
+	if config.APIKey == "" {
+		panic("api_key is required in flux.yaml")
+	}
+
+	if config.GRPC == nil {
+		panic("grpc section is required in flux.yaml — set insecure: true to disable TLS")
+	}
+	if !config.GRPC.Insecure && (config.GRPC.CACert == "" || config.GRPC.CertFile == "" || config.GRPC.KeyFile == "") {
+		panic("grpc requires ca_cert, cert, and key — or set insecure: true")
 	}
 
 	// Defaults

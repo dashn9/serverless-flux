@@ -19,24 +19,15 @@ import (
 )
 
 type AgentClient struct {
-	mu     sync.RWMutex
-	conns  map[string]*grpc.ClientConn
-	tlsCfg *config.TLSConfig
+	mu      sync.RWMutex
+	conns   map[string]*grpc.ClientConn
+	grpcCfg *config.GRPCConfig
 }
 
-// NewAgentClient creates a client that uses insecure (plaintext) gRPC.
-func NewAgentClient() *AgentClient {
+func NewAgentClient(grpcCfg *config.GRPCConfig) *AgentClient {
 	return &AgentClient{
-		conns: make(map[string]*grpc.ClientConn),
-	}
-}
-
-// NewAgentClientTLS creates a client that authenticates agents via mTLS.
-// Flux presents its own cert/key and verifies agents against the CA.
-func NewAgentClientTLS(tlsCfg *config.TLSConfig) *AgentClient {
-	return &AgentClient{
-		conns:  make(map[string]*grpc.ClientConn),
-		tlsCfg: tlsCfg,
+		conns:   make(map[string]*grpc.ClientConn),
+		grpcCfg: grpcCfg,
 	}
 }
 
@@ -59,9 +50,9 @@ func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
 
 	var creds credentials.TransportCredentials
 
-	if c.tlsCfg != nil && c.tlsCfg.Enabled {
+	if !c.grpcCfg.Insecure {
 		var err error
-		creds, err = loadFluxTLSCredentials(c.tlsCfg)
+		creds, err = loadFluxTLSCredentials(c.grpcCfg)
 		if err != nil {
 			return nil, fmt.Errorf("load mTLS credentials: %w", err)
 		}
@@ -85,13 +76,13 @@ func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
 
 // loadFluxTLSCredentials builds mTLS client credentials for Flux connecting to agents.
 // Flux presents its cert/key and verifies the agent's cert against the CA.
-func loadFluxTLSCredentials(tlsCfg *config.TLSConfig) (credentials.TransportCredentials, error) {
-	cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
+func loadFluxTLSCredentials(grpcCfg *config.GRPCConfig) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(grpcCfg.CertFile, grpcCfg.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load flux cert/key: %w", err)
 	}
 
-	caData, err := os.ReadFile(tlsCfg.CACert)
+	caData, err := os.ReadFile(grpcCfg.CACert)
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert: %w", err)
 	}

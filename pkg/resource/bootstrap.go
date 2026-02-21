@@ -12,26 +12,25 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// BootstrapConfig holds everything needed to install and start an agent on a
-// freshly provisioned node via SSH. It is cloud-provider-agnostic — any
-// provider can embed or instantiate an SSHBootstrapper with this config.
+// BootstrapConfig holds everything needed to configure and start an agent on a
+// freshly provisioned node via SSH. It is cloud-provider-agnostic.
 type BootstrapConfig struct {
 	// SSH credentials
 	SSHKeyPath string // local path to the private key (.pem / openssh)
 	SSHUser    string // remote OS user (e.g. "ec2-user", "ubuntu")
-
-	// Agent binary to upload. Empty means the binary is already present on
-	// the node (pre-baked AMI or installed via user-data).
-	AgentBinaryPath string
 
 	// Agent runtime configuration written to the remote node.
 	// AgentID is not stored here — it is taken from ProvisionedNode at bootstrap time.
 	AgentPort int
 	RedisAddr string
 
-	// TLS — when non-nil and Enabled, CA + agent cert/key are deployed before
-	// the agent service is started.
-	TLS *config.TLSConfig
+	// AgentVersion, when set, means the .deb was installed via user-data and
+	// the config lives in /etc/flux-agent instead of /opt/flux-agent.
+	AgentVersion string
+
+	// AgentGRPC, when set, uploads the agent TLS cert files from the local
+	// Flux host to the node during bootstrap, then references them in agent.yaml.
+	AgentGRPC *config.AgentGRPCConfig
 }
 
 // SSHBootstrapper installs and starts the flux-agent on a remote node over SSH.
@@ -64,41 +63,32 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 	}
 	defer client.Close()
 
-	if err := b.run(client, "mkdir -p /opt/flux-agent/tls"); err != nil {
+	configDir := configDirFor(b.cfg.AgentVersion)
+
+	if err := b.run(client, fmt.Sprintf("mkdir -p %s/tls", configDir)); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
-	// Upload agent binary if provided.
-	if b.cfg.AgentBinaryPath != "" {
-		if err := b.upload(client, b.cfg.AgentBinaryPath, "/opt/flux-agent/flux-agent"); err != nil {
-			return fmt.Errorf("upload binary: %w", err)
-		}
-		if err := b.run(client, "chmod +x /opt/flux-agent/flux-agent"); err != nil {
-			return fmt.Errorf("chmod binary: %w", err)
-		}
-		log.Printf("[bootstrap] Agent binary uploaded to %s", node.PublicIP)
-	}
-
-	// Deploy mTLS certs when TLS is enabled.
-	if b.cfg.TLS != nil && b.cfg.TLS.Enabled && b.cfg.TLS.AgentCert != "" {
-		for _, transfer := range []struct{ local, remote string }{
-			{b.cfg.TLS.CACert, "/opt/flux-agent/tls/ca.pem"},
-			{b.cfg.TLS.AgentCert, "/opt/flux-agent/tls/agent.pem"},
-			{b.cfg.TLS.AgentKey, "/opt/flux-agent/tls/agent-key.pem"},
+	// Upload agent TLS certs from the local Flux host if configured.
+	if b.cfg.AgentGRPC != nil {
+		for _, t := range []struct{ local, remote string }{
+			{b.cfg.AgentGRPC.CACert, configDir + "/tls/ca.pem"},
+			{b.cfg.AgentGRPC.CertFile, configDir + "/tls/agent.pem"},
+			{b.cfg.AgentGRPC.KeyFile, configDir + "/tls/agent-key.pem"},
 		} {
-			if err := b.upload(client, transfer.local, transfer.remote); err != nil {
-				return fmt.Errorf("upload TLS file %s: %w", transfer.local, err)
+			if err := b.upload(client, t.local, t.remote); err != nil {
+				return fmt.Errorf("upload TLS %s: %w", t.local, err)
 			}
 		}
-		if err := b.run(client, "chmod 600 /opt/flux-agent/tls/*"); err != nil {
+		if err := b.run(client, fmt.Sprintf("chmod 600 %s/tls/*", configDir)); err != nil {
 			return fmt.Errorf("chmod tls: %w", err)
 		}
-		log.Printf("[bootstrap] mTLS certs deployed to %s", node.PublicIP)
+		log.Printf("[bootstrap] Agent TLS certs deployed to %s", node.PublicIP)
 	}
 
-	// Write agent.yaml on the remote node using node.AgentID from the provisioned instance.
-	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, b.cfg.TLS)
-	writeCmd := fmt.Sprintf("cat > /opt/flux-agent/agent.yaml <<'EOF'\n%sEOF", agentYAML)
+	// Write agent.yaml.
+	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, configDir, b.cfg.AgentGRPC)
+	writeCmd := fmt.Sprintf("cat > %s/agent.yaml <<'EOF'\n%sEOF", configDir, agentYAML)
 	if err := b.run(client, writeCmd); err != nil {
 		return fmt.Errorf("write agent.yaml: %w", err)
 	}

@@ -22,12 +22,6 @@ import (
 func main() {
 	httpPort := 7227
 
-	apiKey := os.Getenv("API_KEY")
-	if apiKey == "" {
-		apiKey = "default-secret-key"
-		log.Printf("Warning: Using default API key. Set API_KEY environment variable.")
-	}
-
 	configPath := os.Getenv("FLUX_CONFIG")
 	if configPath == "" {
 		configPath = "flux.yaml"
@@ -48,14 +42,11 @@ func main() {
 
 	reg := registry.NewRegistry(mem)
 
-	// Build the gRPC agent client. Use mTLS when TLS is configured.
-	var agentClient *client.AgentClient
-	if fluxConfig.TLS != nil && fluxConfig.TLS.Enabled {
-		agentClient = client.NewAgentClientTLS(fluxConfig.TLS)
-		log.Printf("gRPC client: mTLS enabled (ca=%s cert=%s)", fluxConfig.TLS.CACert, fluxConfig.TLS.CertFile)
+	agentClient := client.NewAgentClient(fluxConfig.GRPC)
+	if fluxConfig.GRPC.Insecure {
+		log.Printf("gRPC client: plaintext (insecure mode)")
 	} else {
-		agentClient = client.NewAgentClient()
-		log.Printf("gRPC client: plaintext (TLS not configured)")
+		log.Printf("gRPC client: mTLS (ca=%s cert=%s)", fluxConfig.GRPC.CACert, fluxConfig.GRPC.CertFile)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,7 +62,7 @@ func main() {
 			fluxConfig.Autoscaling,
 			fluxConfig.AgentPort,
 			redisAddr,
-			fluxConfig.TLS,
+			fluxConfig.AgentGRPC,
 		)
 		if err != nil {
 			log.Fatalf("Failed to initialize autoscaler: %v", err)
@@ -83,7 +74,7 @@ func main() {
 		log.Printf("Autoscaling is disabled")
 	}
 
-	apiServer := api.NewAPIServer(reg, apiKey, agentClient)
+	apiServer := api.NewAPIServer(reg, fluxConfig.APIKey, agentClient)
 	log.Printf("HTTP API server listening on port %d", httpPort)
 
 	go func() {

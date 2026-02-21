@@ -26,7 +26,7 @@ type AWSProvider struct {
 	fluxCfg      *config.AutoscaleConfig
 	agentPort    int
 	redisAddr    string
-	tlsCfg       *config.TLSConfig
+	agentGRPC    *config.AgentGRPCConfig
 	bootstrapper *SSHBootstrapper // nil when ssh_key_path is not configured
 	seqNum       int
 }
@@ -37,7 +37,7 @@ func NewAWSProvider(
 	fluxCfg *config.AutoscaleConfig,
 	agentPort int,
 	redisAddr string,
-	tlsCfg *config.TLSConfig,
+	agentGRPC *config.AgentGRPCConfig,
 ) (*AWSProvider, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(awsCfg.Region),
@@ -56,12 +56,12 @@ func NewAWSProvider(
 	// Build the SSH bootstrapper only when a key path is provided.
 	// If absent, provisioning relies entirely on user-data.
 	bootstrapper := NewSSHBootstrapper(BootstrapConfig{
-		SSHKeyPath:      awsCfg.SSHKeyPath,
-		SSHUser:         awsCfg.SSHUser,
-		AgentBinaryPath: awsCfg.AgentBinaryPath,
-		AgentPort:       agentPort,
-		RedisAddr:       redisAddr,
-		TLS:             tlsCfg,
+		SSHKeyPath:   awsCfg.SSHKeyPath,
+		SSHUser:      awsCfg.SSHUser,
+		AgentPort:    agentPort,
+		RedisAddr:    redisAddr,
+		AgentVersion: awsCfg.AgentVersion,
+		AgentGRPC:    agentGRPC,
 	})
 
 	return &AWSProvider{
@@ -70,7 +70,7 @@ func NewAWSProvider(
 		fluxCfg:      fluxCfg,
 		agentPort:    agentPort,
 		redisAddr:    redisAddr,
-		tlsCfg:       tlsCfg,
+		agentGRPC:    agentGRPC,
 		bootstrapper: bootstrapper,
 	}, nil
 }
@@ -92,7 +92,7 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	log.Printf("[aws] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",
 		instanceType, resources.VCPUs, resources.MemoryGB, agentID)
 
-	userData := buildAgentUserData(agentID, a.agentPort, a.redisAddr, a.tlsCfg)
+	userData := buildAgentUserData(agentID, a.agentPort, a.redisAddr, a.cfg.AgentVersion, a.agentGRPC)
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(a.cfg.AMI),
