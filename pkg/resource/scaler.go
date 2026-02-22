@@ -133,11 +133,17 @@ func (a *Autoscaler) poll(ctx context.Context) {
 	now := time.Now()
 	window := time.Duration(a.cfg.EvaluationWindowSec) * time.Second
 
-	// Collect metrics from online agents.
-	for _, agent := range a.registry.GetOnlineAgents() {
+		for _, agent := range a.registry.GetAllAgents() {
+		if agent.Status == models.AgentDraining {
+			continue
+		}
+
 		status, err := a.agentClient.GetNodeStatus(agent)
 		if err != nil {
-			log.Printf("[autoscaler] Failed to get status from %s: %v", agent.ID, err)
+			if agent.Status == models.AgentOnline {
+				log.Printf("[autoscaler] Agent %s unreachable, marking offline: %v", agent.ID, err)
+				a.registry.SetOffline(agent.ID)
+			}
 			continue
 		}
 
@@ -157,16 +163,6 @@ func (a *Autoscaler) poll(ctx context.Context) {
 		}
 		a.pressureHistory[agent.ID] = trimmed
 		a.mu.Unlock()
-	}
-
-	// Probe offline managed agents — promotes them to online on first contact.
-	for _, agent := range a.registry.GetOfflineAgents() {
-		status, err := a.agentClient.GetNodeStatus(agent)
-		if err != nil {
-			continue // still booting
-		}
-		a.registry.UpdateNodeStatus(agent.ID, status)
-		log.Printf("[autoscaler] Agent %s promoted to online", agent.ID)
 	}
 
 	a.checkAndTriggerScale(ctx)
@@ -398,7 +394,13 @@ func (a *Autoscaler) spawnNode(ctx context.Context, resources NodeResources) {
 
 	go func() {
 		if err := a.provider.Bootstrap(ctx, node); err != nil {
-			log.Printf("[autoscaler] Bootstrap failed for %s: %v", node.AgentID, err)
+			log.Printf("[autoscaler] Bootstrap failed for %s: %v — terminating", node.AgentID, err)
+			a.registry.DeregisterAgent(node.AgentID)
+			if terr := a.provider.TerminateNode(ctx, node.ProviderID); terr != nil {
+				log.Printf("[autoscaler] Failed to terminate %s after bootstrap failure: %v", node.ProviderID, terr)
+			} else {
+				log.Printf("[autoscaler] Terminated %s after bootstrap failure", node.ProviderID)
+			}
 			return
 		}
 		log.Printf("[autoscaler] Bootstrap complete: agent=%s", node.AgentID)

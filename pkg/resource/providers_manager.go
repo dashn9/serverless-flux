@@ -118,7 +118,13 @@ func (m *ProvidersManager) InitializeNodes() (int, int) {
 				log.Printf("[providers] Node spawned: agent=%s type=%s addr=%s — bootstrapping...",
 					node.AgentID, node.InstanceType, agentAddr)
 				if err := e.provider.Bootstrap(ctx, node); err != nil {
-					log.Printf("[providers] Bootstrap failed for %s: %v", node.AgentID, err)
+					log.Printf("[providers] Bootstrap failed for %s: %v — terminating", node.AgentID, err)
+					m.reg.DeregisterAgent(node.AgentID)
+					if terr := e.provider.TerminateNode(ctx, node.ProviderID); terr != nil {
+						log.Printf("[providers] Failed to terminate %s after bootstrap failure: %v", node.ProviderID, terr)
+					} else {
+						log.Printf("[providers] Terminated %s after bootstrap failure", node.ProviderID)
+					}
 					return
 				}
 				log.Printf("[providers] Bootstrap complete: agent=%s", node.AgentID)

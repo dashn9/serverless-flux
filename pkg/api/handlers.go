@@ -193,6 +193,15 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/nodes" && r.Method == "DELETE" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleCleanupNodes(w, r)
+		return
+	}
+
 	if r.URL.Path == "/resources" && r.Method == "GET" {
 		if !s.authenticate(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -528,6 +537,20 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+func (s *APIServer) handleCleanupNodes(w http.ResponseWriter, r *http.Request) {
+	agents := s.registry.GetAllAgents()
+	for _, agent := range agents {
+		s.registry.DeregisterAgent(agent.ID)
+	}
+	log.Printf("[api] All nodes deregistered: count=%d", len(agents))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "removed",
+		"removed": len(agents),
+	})
 }
 
 func (s *APIServer) handleResources(w http.ResponseWriter, r *http.Request) {

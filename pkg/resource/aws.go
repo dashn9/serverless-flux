@@ -2,7 +2,6 @@ package scaler
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"time"
@@ -70,7 +69,6 @@ func (a *AWSProvider) Name() string { return "aws" }
 // node_types list — no hardcoded catalog.
 func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*ProvisionedNode, error) {
 	cfg := config.Get().Providers.AWS
-	fluxCfg := config.Get()
 
 	if cfg.Autoscaling == nil || len(cfg.Autoscaling.NodeTypes) == 0 {
 		return nil, fmt.Errorf("no node_types configured")
@@ -86,24 +84,15 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	log.Printf("[aws] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",
 		instanceType, resources.VCPUs, resources.MemoryGB, agentID)
 
-	userData := buildAgentUserData(agentID, fluxCfg.AgentPort, fluxCfg.RedisAddr, cfg.AgentVersion, fluxCfg.GRPC.Agent)
-
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(cfg.AMI),
 		InstanceType: types.InstanceType(instanceType),
 		MinCount:     aws.Int32(1),
 		MaxCount:     aws.Int32(1),
-		KeyName:      aws.String(cfg.KeyName),
-		UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
-
-		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
-			{
-				DeviceIndex:              aws.Int32(0),
-				SubnetId:                 aws.String(cfg.SubnetID),
-				Groups:                   []string{cfg.SecurityGroupID},
-				AssociatePublicIpAddress: aws.Bool(true),
-			},
-		},
+		KeyName:      aws.String(cfg.SSHKeyName),
+		// TODO: support explicit subnet/VPC targeting via config (subnet_id, vpc_id)
+		// for environments that don't use the default VPC.
+		SecurityGroupIds: []string{cfg.SecurityGroupID},
 
 		TagSpecifications: []types.TagSpecification{
 			{
@@ -123,8 +112,8 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		},
 	}
 
-	log.Printf("[aws] Launching %s — ami=%s subnet=%s sg=%s",
-		instanceType, cfg.AMI, cfg.SubnetID, cfg.SecurityGroupID)
+	log.Printf("[aws] Launching %s — ami=%s sg=%s (default VPC)",
+		instanceType, cfg.AMI, cfg.SecurityGroupID)
 
 	result, err := a.ec2Client.RunInstances(ctx, input)
 	if err != nil {

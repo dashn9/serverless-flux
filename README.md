@@ -37,8 +37,7 @@ providers:
   aws:
     region: us-east-1
     ami: ami-...
-    key_name: my-key
-    subnet_id: subnet-...
+    ssh_keyname: my-key
     security_group_id: sg-...
     ssh_key_path: ~/.ssh/key.pem
     agent_version: "0.1.0"   # installs .deb from GitHub Releases

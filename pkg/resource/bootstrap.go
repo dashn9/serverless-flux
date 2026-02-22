@@ -9,8 +9,21 @@ import (
 	"time"
 
 	"flux/pkg/config"
+
 	"golang.org/x/crypto/ssh"
 )
+
+const agentDebURLTemplate = "https://github.com/dashn9/serverless-agent/releases/download/v%s/flux-agent_%s_amd64.deb"
+
+// buildAgentYAML returns the agent.yaml content for the given node.
+func buildAgentYAML(agentID string, port int, redisAddr string, configDir string, agentGRPC *config.AgentGRPCConfig) string {
+	tlsBlock := ""
+	if agentGRPC != nil {
+		tlsBlock = fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert: %s/tls/agent.pem\n  key: %s/tls/agent-key.pem\n",
+			configDir, configDir, configDir)
+	}
+	return fmt.Sprintf("agent_id: %s\nport: \"%d\"\nredis_addr: \"%s\"\n%s", agentID, port, redisAddr, tlsBlock)
+}
 
 // BootstrapConfig holds everything needed to configure and start an agent on a
 // freshly provisioned node via SSH. It is cloud-provider-agnostic.
@@ -24,8 +37,8 @@ type BootstrapConfig struct {
 	AgentPort int
 	RedisAddr string
 
-	// AgentVersion, when set, means the .deb was installed via user-data and
-	// the config lives in /etc/flux-agent instead of /opt/flux-agent.
+	// AgentVersion is used to locate the correct config directory.
+	// /etc/flux-agent for .deb installs; /opt/flux-agent for manual installs.
 	AgentVersion string
 
 	// AgentGRPC, when set, uploads the agent TLS cert files from the local
@@ -50,10 +63,10 @@ func NewSSHBootstrapper(cfg BootstrapConfig) *SSHBootstrapper {
 }
 
 // Bootstrap connects to node.PublicIP and:
-//  1. Uploads the agent binary (if AgentBinaryPath is set).
-//  2. Deploys mTLS certificates (if TLS is enabled).
+//  1. Downloads and installs the flux-agent .deb (if AgentVersion is set).
+//  2. Deploys mTLS certificates (if AgentGRPC is configured).
 //  3. Writes agent.yaml with the runtime config.
-//  4. Starts (or restarts) the flux-agent systemd service.
+//  4. Enables and starts the flux-agent systemd service.
 func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) error {
 	log.Printf("[bootstrap] SSH bootstrap starting for %s at %s", node.AgentID, node.PublicIP)
 
@@ -63,9 +76,20 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 	}
 	defer client.Close()
 
-	configDir := configDirFor(b.cfg.AgentVersion)
+	// Download and install the agent .deb if a version is configured.
+	if b.cfg.AgentVersion != "" {
+		debURL := fmt.Sprintf(agentDebURLTemplate, b.cfg.AgentVersion, b.cfg.AgentVersion)
+		installCmd := fmt.Sprintf(
+			`curl --connect-timeout 10 --max-time 30 -fLo /tmp/flux-agent.deb %q && sudo dpkg -i /tmp/flux-agent.deb && rm -f /tmp/flux-agent.deb`, debURL)
+		log.Printf("[bootstrap] Installing flux-agent v%s on %s", b.cfg.AgentVersion, node.PublicIP)
+		if err := b.run(client, installCmd); err != nil {
+			return fmt.Errorf("install agent: %w", err)
+		}
+	}
 
-	if err := b.run(client, fmt.Sprintf("mkdir -p %s/tls", configDir)); err != nil {
+	configDir := "/home/" + b.cfg.SSHUser + "/flux-agent"
+
+	if err := b.run(client, fmt.Sprintf("sudo mkdir -p %s/tls", configDir)); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
@@ -80,7 +104,7 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 				return fmt.Errorf("upload TLS %s: %w", t.local, err)
 			}
 		}
-		if err := b.run(client, fmt.Sprintf("chmod 600 %s/tls/*", configDir)); err != nil {
+		if err := b.run(client, fmt.Sprintf("sudo chmod 600 %s/tls/*", configDir)); err != nil {
 			return fmt.Errorf("chmod tls: %w", err)
 		}
 		log.Printf("[bootstrap] Agent TLS certs deployed to %s", node.PublicIP)
@@ -88,13 +112,13 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 
 	// Write agent.yaml.
 	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, configDir, b.cfg.AgentGRPC)
-	writeCmd := fmt.Sprintf("cat > %s/agent.yaml <<'EOF'\n%sEOF", configDir, agentYAML)
+	writeCmd := fmt.Sprintf("sudo tee %s/agent.yaml > /dev/null <<'EOF'\n%sEOF", configDir, agentYAML)
 	if err := b.run(client, writeCmd); err != nil {
 		return fmt.Errorf("write agent.yaml: %w", err)
 	}
 
-	// Start the agent service.
-	if err := b.run(client, "systemctl daemon-reload && systemctl enable flux-agent && systemctl restart flux-agent"); err != nil {
+	// Restart the agent service with the new config.
+	if err := b.run(client, "sudo systemctl daemon-reload && sudo systemctl enable flux-agent && sudo systemctl restart flux-agent"); err != nil {
 		return fmt.Errorf("start service: %w", err)
 	}
 
@@ -175,7 +199,7 @@ func (b *SSHBootstrapper) upload(client *ssh.Client, localPath, remotePath strin
 		return err
 	}
 
-	if err := sess.Start(fmt.Sprintf("cat > %s", remotePath)); err != nil {
+	if err := sess.Start(fmt.Sprintf("sudo tee %s > /dev/null", remotePath)); err != nil {
 		return err
 	}
 	if _, err := stdin.Write(data); err != nil {

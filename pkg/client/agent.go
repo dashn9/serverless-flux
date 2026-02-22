@@ -20,8 +20,8 @@ import (
 )
 
 type AgentClient struct {
-	mu    sync.RWMutex
-	conns map[string]*grpc.ClientConn
+	mu      sync.RWMutex
+	clients map[string]pb.AgentServiceClient
 }
 
 func NewAgentClient() *AgentClient {
@@ -31,29 +31,26 @@ func NewAgentClient() *AgentClient {
 	} else {
 		log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", grpcCfg.CACert, grpcCfg.CertFile)
 	}
-	return &AgentClient{conns: make(map[string]*grpc.ClientConn)}
+	return &AgentClient{clients: make(map[string]pb.AgentServiceClient)}
 }
 
-func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
+func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
 	c.mu.RLock()
-	conn, exists := c.conns[address]
+	cl, exists := c.clients[address]
 	c.mu.RUnlock()
-
 	if exists {
-		return conn, nil
+		return cl, nil
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if conn, exists := c.conns[address]; exists {
-		return conn, nil
+	if cl, exists := c.clients[address]; exists {
+		return cl, nil
 	}
 
-	var creds credentials.TransportCredentials
-
 	grpcCfg := config.Get().GRPC
+	var creds credentials.TransportCredentials
 	if !grpcCfg.Insecure {
 		var err error
 		creds, err = loadFluxTLSCredentials(grpcCfg)
@@ -74,12 +71,12 @@ func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
 		return nil, err
 	}
 
-	c.conns[address] = conn
-	return conn, nil
+	cl = pb.NewAgentServiceClient(conn)
+	c.clients[address] = cl
+	return cl, nil
 }
 
 // loadFluxTLSCredentials builds mTLS client credentials for Flux connecting to agents.
-// Flux presents its cert/key and verifies the agent's cert against the CA.
 func loadFluxTLSCredentials(grpcCfg *config.GRPCConfig) (credentials.TransportCredentials, error) {
 	cert, err := tls.LoadX509KeyPair(grpcCfg.CertFile, grpcCfg.KeyFile)
 	if err != nil {
@@ -98,22 +95,21 @@ func loadFluxTLSCredentials(grpcCfg *config.GRPCConfig) (credentials.TransportCr
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
-		ServerName:   "flux-agent", // agents use a fixed CN so dynamic IPs don't break verification
+		ServerName:   "flux-agent",
 	}
 	return credentials.NewTLS(cfg), nil
 }
 
 func (c *AgentClient) RegisterFunction(agent *models.Agent, function *models.Function) error {
-	conn, err := c.getConn(agent.Address)
+	cl, err := c.get(agent.Address)
 	if err != nil {
 		return err
 	}
 
-	client := pb.NewAgentServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := client.RegisterFunction(ctx, &pb.FunctionConfig{
+	resp, err := cl.RegisterFunction(ctx, &pb.FunctionConfig{
 		Name:                   function.Name,
 		Handler:                function.Handler,
 		CpuMillicores:          function.CPUMillicores,
@@ -123,86 +119,75 @@ func (c *AgentClient) RegisterFunction(agent *models.Agent, function *models.Fun
 		MaxConcurrency:         function.MaxConcurrency,
 		MaxConcurrencyBehavior: string(function.MaxConcurrencyBehavior),
 	})
-
 	if err != nil {
 		return err
 	}
-
 	if !resp.Success {
 		return fmt.Errorf("registration failed: %s", resp.Message)
 	}
-
 	return nil
 }
 
 func (c *AgentClient) DeployFunction(agent *models.Agent, functionName string, zipData []byte) error {
-	conn, err := c.getConn(agent.Address)
+	cl, err := c.get(agent.Address)
 	if err != nil {
 		return err
 	}
 
-	client := pb.NewAgentServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := client.DeployFunction(ctx, &pb.DeploymentPackage{
+	resp, err := cl.DeployFunction(ctx, &pb.DeploymentPackage{
 		FunctionName: functionName,
 		CodeArchive:  zipData,
 	})
-
 	if err != nil {
 		return err
 	}
-
 	if !resp.Success {
 		return fmt.Errorf("deployment failed: %s", resp.Message)
 	}
-
 	return nil
 }
 
 func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, args []string) (*pb.ExecutionResponse, error) {
-	conn, err := c.getConn(agent.Address)
+	cl, err := c.get(agent.Address)
 	if err != nil {
 		return nil, err
 	}
 
-	client := pb.NewAgentServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	return client.ExecuteFunction(ctx, &pb.ExecutionRequest{
+	return cl.ExecuteFunction(ctx, &pb.ExecutionRequest{
 		FunctionName: functionName,
 		Args:         args,
 	})
 }
 
 func (c *AgentClient) HealthCheck(agent *models.Agent) error {
-	conn, err := c.getConn(agent.Address)
+	cl, err := c.get(agent.Address)
 	if err != nil {
 		return err
 	}
 
-	client := pb.NewAgentServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err = client.HealthCheck(ctx, &pb.HealthCheckRequest{})
+	_, err = cl.HealthCheck(ctx, &pb.HealthCheckRequest{})
 	return err
 }
 
-// GetNodeStatus fetches live CPU/memory metrics from the given agent.
 func (c *AgentClient) GetNodeStatus(agent *models.Agent) (*models.NodeStatus, error) {
-	conn, err := c.getConn(agent.Address)
+	cl, err := c.get(agent.Address)
 	if err != nil {
 		return nil, err
 	}
 
-	client := pb.NewAgentServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := client.ReportNodeStatus(ctx, &pb.NodeStatusRequest{})
+	resp, err := cl.ReportNodeStatus(ctx, &pb.NodeStatusRequest{})
 	if err != nil {
 		return nil, err
 	}

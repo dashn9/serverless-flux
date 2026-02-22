@@ -74,6 +74,20 @@ func (r *Registry) DeregisterAgent(id string) {
 	}
 }
 
+// SetOffline marks an agent as offline. It will be probed and promoted back
+// to online once it responds successfully to a GetNodeStatus call.
+func (r *Registry) SetOffline(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if agent, ok := r.agents[id]; ok {
+		if agent.Status != models.AgentDraining {
+			agent.Status = models.AgentOffline
+			log.Printf("[registry] Agent %s marked offline", id)
+		}
+	}
+}
+
 // SetDraining marks an agent as draining so no new work is routed to it.
 func (r *Registry) SetDraining(id string) {
 	r.mu.Lock()

@@ -45,12 +45,14 @@ type ProvidersConfig struct {
 type AWSProviderConfig struct {
 	Region          string `yaml:"region"`
 	AMI             string `yaml:"ami"`
-	KeyName         string `yaml:"key_name"`
-	SubnetID        string `yaml:"subnet_id"`
 	SecurityGroupID string `yaml:"security_group_id"`
 
 	AccessKeyID     string `yaml:"access_key_id,omitempty"`
 	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+
+	// SSHKeyName is the AWS EC2 key pair name injected into spawned nodes at launch.
+	// Anyone holding the matching private key (SSHKeyPath) can SSH into the node.
+	SSHKeyName string `yaml:"ssh_keyname,omitempty"`
 
 	// SSHKeyPath is the local path to the private key (.pem) used to SSH into
 	// newly provisioned instances for the bootstrap step.

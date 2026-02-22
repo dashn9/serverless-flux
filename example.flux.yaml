@@ -24,9 +24,7 @@ grpc:
 providers:
   aws:
     region: us-east-1
-    ami: ami-0abcdef1234567890
-    key_name: flux-agent-key
-    subnet_id: subnet-0123456789abcdef0
+    ami: ami-064519b8c76274859
     security_group_id: sg-0123456789abcdef0
 
     # Static credentials — optional.
@@ -34,9 +32,11 @@ providers:
     # access_key_id: AKIAIOSFODNN7EXAMPLE
     # secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
-    # SSH bootstrap — if set, Flux SSHs into the node to upload certs and agent.yaml.
+    # SSH access — ssh_keyname is the EC2 key pair injected into nodes at launch.
+    # Anyone with the matching private key (ssh_key_path) can SSH into the node.
+    ssh_keyname: flux-agent-key
     ssh_key_path: /home/user/.ssh/flux-agent-key.pem
-    ssh_user: ec2-user
+    ssh_user: admin
     agent_version: "0.1.0"   # fetched from GitHub Releases as a .deb
 
     tags:
