@@ -15,68 +15,16 @@ grpc:
 #   cert:    certs/flux.pem
 #   key:     certs/flux.key
 #   # Local paths on the Flux host to the agent TLS cert files.
-#   # When set, these are uploaded to each node during SSH bootstrap
-#   # and referenced in the agent.yaml written to the node.
+#   # Uploaded to each node during SSH bootstrap.
 #   agent:
 #     ca_cert: certs/ca.pem
 #     cert:    certs/agent.pem
 #     key:     certs/agent.key
 
-# Autoscaling — resource-aware, not instance-type-aware.
-# The provider resolves node_resources into the cheapest matching instance type.
-autoscaling:
-  enabled: true
-
-  # name uniquely identifies this autoscaler config (required when enabled).
-  name: aws-prod
-
-  provider: aws
-
-  # Instance types this autoscaler is allowed to launch, each annotated with
-  # their vCPU and memory equivalent. When scaling up, the tightest-fit entry
-  # is selected automatically — no hardcoded catalog, no API queries.
-  # List from smallest to largest; add or remove types to control what Flux can spawn.
-  node_types:
-    - instance_type: c5.large
-      vcpus: 2
-      memory_gb: 4
-    - instance_type: c5.xlarge
-      vcpus: 4
-      memory_gb: 8
-    - instance_type: c5.2xlarge
-      vcpus: 8
-      memory_gb: 16
-    - instance_type: m5.xlarge
-      vcpus: 4
-      memory_gb: 16
-    - instance_type: r5.xlarge
-      vcpus: 4
-      memory_gb: 32
-
-  # Scale up when all agents sustain CPU above this % (default: 80)
-  cpu_upper_threshold: 80
-
-  # Scale down when all agents sustain CPU below this % (default: 20) — TODO
-  cpu_lower_threshold: 20
-
-  # Seconds CPU must stay above threshold before triggering scale-up (default: 60)
-  evaluation_window_sec: 60
-
-  # Polling interval for node metrics (default: 10)
-  poll_interval_sec: 10
-
-  # Minimum seconds between consecutive scale-up events (default: 300)
-  cooldown_sec: 300
-
-  # Hard ceiling on total managed nodes (default: 10)
-  max_nodes: 10
-
-  # Minimum nodes — autoscaler will never scale below this (default: 1)
-  min_nodes: 1
-
+providers:
   aws:
     region: us-east-1
-    ami: ami-0abcdef1234567890        # Pre-baked or standard AMI with flux-agent service
+    ami: ami-0abcdef1234567890
     key_name: flux-agent-key
     subnet_id: subnet-0123456789abcdef0
     security_group_id: sg-0123456789abcdef0
@@ -86,9 +34,7 @@ autoscaling:
     # access_key_id: AKIAIOSFODNN7EXAMPLE
     # secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
-    # SSH bootstrap (optional) — if set, Flux SSHs into the node after launch
-    # to upload the agent binary and TLS certs, then starts the service.
-    # If omitted, provisioning relies entirely on user-data / the pre-baked AMI.
+    # SSH bootstrap — if set, Flux SSHs into the node to upload certs and agent.yaml.
     ssh_key_path: /home/user/.ssh/flux-agent-key.pem
     ssh_user: ec2-user
     agent_version: "0.1.0"   # fetched from GitHub Releases as a .deb
@@ -96,3 +42,37 @@ autoscaling:
     tags:
       Environment: production
       Team: platform
+
+    autoscaling:
+      enabled: true
+      name: aws-prod
+
+      min_nodes: 1
+      max_nodes: 10
+
+      # Instance types this autoscaler may launch (smallest to largest).
+      node_types:
+        - instance_type: c5.large
+          vcpus: 2
+          memory_gb: 4
+        - instance_type: c5.xlarge
+          vcpus: 4
+          memory_gb: 8
+        - instance_type: c5.2xlarge
+          vcpus: 8
+          memory_gb: 16
+        - instance_type: m5.xlarge
+          vcpus: 4
+          memory_gb: 16
+        - instance_type: r5.xlarge
+          vcpus: 4
+          memory_gb: 32
+
+      cpu_upper_threshold: 80
+      cpu_lower_threshold: 20
+      mem_upper_threshold: 80
+      mem_lower_threshold: 20
+
+      evaluation_window_sec: 60
+      poll_interval_sec: 10
+      cooldown_sec: 300

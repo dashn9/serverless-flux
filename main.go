@@ -27,56 +27,28 @@ func main() {
 		configPath = "flux.yaml"
 	}
 
-	fluxConfig, err := config.LoadFluxConfig(configPath)
-	if err != nil {
-		log.Fatalf("Failed to load flux config: %v", err)
+	if err := config.Load(configPath); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	redisAddr := fluxConfig.RedisAddr
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
-	}
-	mem := memory.NewRedisMemory(redisAddr)
+	mem := memory.NewRedisMemory()
 	defer mem.Close()
-	log.Printf("Connected to Redis at %s", redisAddr)
 
 	reg := registry.NewRegistry(mem)
-
-	agentClient := client.NewAgentClient(fluxConfig.GRPC)
-	if fluxConfig.GRPC.Insecure {
-		log.Printf("gRPC client: plaintext (insecure mode)")
-	} else {
-		log.Printf("gRPC client: mTLS (ca=%s cert=%s)", fluxConfig.GRPC.CACert, fluxConfig.GRPC.CertFile)
-	}
+	agentClient := client.NewAgentClient()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	provMgr, err := scaler.NewProvidersManager(reg, agentClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize providers: %v", err)
+	}
+	provMgr.Start(ctx)
+
 	go startHealthPolling(ctx, reg, agentClient)
 
-	// Start autoscaler if configured.
-	var scaleHint chan<- struct{}
-	if fluxConfig.Autoscaling != nil && fluxConfig.Autoscaling.Enabled {
-		autoscaler, err := scaler.NewAutoscaler(
-			reg,
-			agentClient,
-			fluxConfig.Autoscaling,
-			fluxConfig.AgentPort,
-			redisAddr,
-			fluxConfig.GRPC.Agent,
-		)
-		if err != nil {
-			log.Fatalf("Failed to initialize autoscaler: %v", err)
-		}
-		if autoscaler != nil {
-			autoscaler.Start(ctx)
-			scaleHint = autoscaler.ScaleHintCh()
-		}
-	} else {
-		log.Printf("Autoscaling is disabled")
-	}
-
-	apiServer := api.NewAPIServer(reg, fluxConfig.APIKey, agentClient, scaleHint)
+	apiServer := api.NewAPIServer(reg, agentClient, provMgr)
 	log.Printf("HTTP API server listening on port %d", httpPort)
 
 	go func() {
@@ -102,8 +74,6 @@ func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Poll all agents including pre-registered ones — a successful health
-			// check on a pre-registered agent promotes it to online.
 			agents := reg.GetAllAgents()
 			for _, agent := range agents {
 				go checkAgentHealth(agent, reg, agentClient)
@@ -120,8 +90,6 @@ func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *
 		return
 	}
 
-	// If this agent was offline, a successful health check means it is
-	// now reachable — fetch status to promote it to online.
 	if agent.Status == models.AgentOffline {
 		status, err := agentClient.GetNodeStatus(agent)
 		if err == nil {

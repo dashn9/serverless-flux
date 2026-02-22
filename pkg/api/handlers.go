@@ -9,11 +9,20 @@ import (
 	"time"
 
 	"flux/pkg/client"
+	"flux/pkg/config"
 	"flux/pkg/models"
 	"flux/pkg/registry"
 
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/host"
+	"github.com/shirou/gopsutil/v4/mem"
 	"gopkg.in/yaml.v3"
 )
+
+// Initializer is implemented by ProvidersManager to bootstrap the minimum fleet.
+type Initializer interface {
+	InitializeNodes() (int, int)
+}
 
 // TODO(multi-flux): Support multiple Flux nodes forming a cluster that spans
 // itself automatically from a single seed node based on config. Each Flux node
@@ -22,9 +31,8 @@ import (
 
 type APIServer struct {
 	registry    *registry.Registry
-	apiKey      string
 	agentClient *client.AgentClient
-	scaleHint   chan<- struct{}
+	initializer Initializer
 }
 
 type FunctionYAML struct {
@@ -81,6 +89,32 @@ type AgentOperationStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+type NodeStats struct {
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemPercent  float64 `json:"memory_percent"`
+	MemTotalMB  uint64  `json:"memory_total_mb"`
+	MemUsedMB   uint64  `json:"memory_used_mb"`
+	ActiveTasks int32   `json:"active_tasks,omitempty"`
+	UptimeSec   uint64  `json:"uptime_seconds"`
+	CollectedAt string  `json:"collected_at"`
+}
+
+type FluxResourceInfo struct {
+	Node *NodeStats `json:"node"`
+}
+
+type AgentResourceInfo struct {
+	ID           string     `json:"id"`
+	Status       string     `json:"status"`
+	InstanceType string     `json:"instance_type,omitempty"`
+	Node         *NodeStats `json:"node,omitempty"`
+}
+
+type ResourcesResponse struct {
+	Flux   FluxResourceInfo    `json:"flux"`
+	Agents []AgentResourceInfo `json:"agents"`
+}
+
 // RegisterNodeRequest is the body for POST /nodes/register.
 // An agent calls this endpoint when it has booted and is ready to accept work.
 type RegisterNodeRequest struct {
@@ -89,12 +123,11 @@ type RegisterNodeRequest struct {
 	NodeId  string `json:"node_id"`
 }
 
-func NewAPIServer(registry *registry.Registry, apiKey string, agentClient *client.AgentClient, scaleHint chan<- struct{}) *APIServer {
+func NewAPIServer(registry *registry.Registry, agentClient *client.AgentClient, initializer Initializer) *APIServer {
 	return &APIServer{
 		registry:    registry,
-		apiKey:      apiKey,
 		agentClient: agentClient,
-		scaleHint:   scaleHint,
+		initializer: initializer,
 	}
 }
 
@@ -106,6 +139,15 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == "/agents" && r.Method == "GET" {
 		s.handleGetAgents(w, r)
+		return
+	}
+
+	if r.URL.Path == "/initialize" && r.Method == "POST" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleInitialize(w, r)
 		return
 	}
 
@@ -151,6 +193,15 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/resources" && r.Method == "GET" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleResources(w, r)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -162,8 +213,22 @@ func (s *APIServer) authenticate(r *http.Request) bool {
 			apiKey = apiKey[7:]
 		}
 	}
+	return apiKey == config.Get().APIKey
+}
 
-	return apiKey == s.apiKey
+func (s *APIServer) handleInitialize(w http.ResponseWriter, r *http.Request) {
+	if s.initializer == nil {
+		http.Error(w, "no providers configured", http.StatusServiceUnavailable)
+		return
+	}
+	spawned, attempted := s.initializer.InitializeNodes()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"nodes": map[string]int{
+			"spawned": spawned,
+			"failed":  attempted - spawned,
+		},
+	})
 }
 
 func (s *APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -413,14 +478,6 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		}
 
 		if best == nil {
-			// No agent has the resources to run this function — signal autoscaler
-			// (if enabled) and return 429 so the caller can retry later.
-			if s.scaleHint != nil {
-				select {
-				case s.scaleHint <- struct{}{}:
-				default:
-				}
-			}
 			http.Error(w, "no agents available with sufficient resources", http.StatusTooManyRequests)
 			return
 		}
@@ -471,4 +528,77 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+func (s *APIServer) handleResources(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+
+	// Flux node stats — collected live from the host.
+	cpuPercents, _ := cpu.Percent(0, false)
+	vmStat, _ := mem.VirtualMemory()
+	uptime, _ := host.Uptime()
+
+	var cpuPct float64
+	if len(cpuPercents) > 0 {
+		cpuPct = cpuPercents[0]
+	}
+	var memTotalMB, memUsedMB uint64
+	var memPct float64
+	if vmStat != nil {
+		memTotalMB = vmStat.Total / 1024 / 1024
+		memUsedMB = vmStat.Used / 1024 / 1024
+		memPct = vmStat.UsedPercent
+	}
+
+	resp := ResourcesResponse{
+		Flux: FluxResourceInfo{
+			Node: &NodeStats{
+				CPUPercent:  cpuPct,
+				MemPercent:  memPct,
+				MemTotalMB:  memTotalMB,
+				MemUsedMB:   memUsedMB,
+				UptimeSec:   uptime,
+				CollectedAt: now.Format(time.RFC3339),
+			},
+		},
+	}
+
+	// Agent node stats — from cached registry data (populated by autoscaler polls).
+	agents := s.registry.GetAllAgents()
+	resp.Agents = make([]AgentResourceInfo, 0, len(agents))
+	for _, agent := range agents {
+		statusStr := "offline"
+		switch agent.Status {
+		case models.AgentOnline:
+			statusStr = "online"
+		case models.AgentBusy:
+			statusStr = "busy"
+		case models.AgentDraining:
+			statusStr = "draining"
+		}
+
+		info := AgentResourceInfo{
+			ID:           agent.ID,
+			Status:       statusStr,
+			InstanceType: agent.InstanceType,
+		}
+
+		if agent.NodeStatus != nil {
+			ns := agent.NodeStatus
+			info.Node = &NodeStats{
+				CPUPercent:  ns.CPUPercent,
+				MemPercent:  ns.MemPercent,
+				MemTotalMB:  ns.MemTotalMB,
+				MemUsedMB:   ns.MemUsedMB,
+				ActiveTasks: ns.ActiveTasks,
+				UptimeSec:   uint64(ns.UptimeSec),
+				CollectedAt: ns.CollectedAt.Format(time.RFC3339),
+			}
+		}
+
+		resp.Agents = append(resp.Agents, info)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

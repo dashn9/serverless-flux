@@ -8,11 +8,11 @@ import (
 )
 
 type FluxConfig struct {
-	APIKey      string           `yaml:"api_key"`
-	RedisAddr   string           `yaml:"redis_addr"`
-	AgentPort   int              `yaml:"agent_port"`
-	GRPC        *GRPCConfig      `yaml:"grpc"`
-	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
+	APIKey    string           `yaml:"api_key"`
+	RedisAddr string           `yaml:"redis_addr"`
+	AgentPort int              `yaml:"agent_port"`
+	GRPC      *GRPCConfig      `yaml:"grpc"`
+	Providers *ProvidersConfig `yaml:"providers,omitempty"`
 }
 
 // GRPCConfig controls how Flux dials agents over gRPC.
@@ -34,16 +34,47 @@ type AgentGRPCConfig struct {
 	KeyFile  string `yaml:"key"`
 }
 
-// AutoscaleConfig controls the autoscaling behaviour.
+// ProvidersConfig holds configuration for each supported cloud provider.
+// Only providers with a non-nil entry are active.
+type ProvidersConfig struct {
+	AWS *AWSProviderConfig `yaml:"aws,omitempty"`
+}
+
+// AWSProviderConfig holds all AWS-specific settings plus the autoscaling
+// configuration that applies to this provider's node fleet.
+type AWSProviderConfig struct {
+	Region          string `yaml:"region"`
+	AMI             string `yaml:"ami"`
+	KeyName         string `yaml:"key_name"`
+	SubnetID        string `yaml:"subnet_id"`
+	SecurityGroupID string `yaml:"security_group_id"`
+
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+
+	// SSHKeyPath is the local path to the private key (.pem) used to SSH into
+	// newly provisioned instances for the bootstrap step.
+	// If empty, provisioning relies entirely on user-data.
+	SSHKeyPath string `yaml:"ssh_key_path,omitempty"`
+
+	// SSHUser is the OS user to log in as during bootstrap (default: "ec2-user").
+	SSHUser string `yaml:"ssh_user,omitempty"`
+
+	// AgentVersion is the flux-agent release version to fetch from GitHub
+	// Releases and install as a .deb on newly provisioned nodes (e.g. "0.1.0").
+	AgentVersion string `yaml:"agent_version,omitempty"`
+
+	Tags map[string]string `yaml:"tags,omitempty"`
+
+	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
+}
+
+// AutoscaleConfig controls autoscaling behaviour for a provider's node fleet.
 type AutoscaleConfig struct {
 	Enabled bool `yaml:"enabled"`
 
-	// Name is a unique identifier for this provider configuration.
-	// Required when autoscaling is enabled; must be unique across all configs.
+	// Name is a unique identifier for this autoscaler (required when enabled).
 	Name string `yaml:"name"`
-
-	// Provider is the cloud provider to use for scaling ("aws").
-	Provider string `yaml:"provider"`
 
 	// CPUUpperThreshold triggers scale-up when CPU is sustained above this (default: 80).
 	CPUUpperThreshold float64 `yaml:"cpu_upper_threshold"`
@@ -72,14 +103,9 @@ type AutoscaleConfig struct {
 	// MinNodes is the lower limit — autoscaler will never scale below this (default: 1).
 	MinNodes int `yaml:"min_nodes"`
 
-	// NodeTypes lists the instance types this autoscaler is allowed to launch,
-	// each annotated with its vCPU and memory equivalent. The autoscaler picks
-	// the tightest-fit entry when spawning a new node.
+	// NodeTypes lists the instance types this autoscaler is allowed to launch.
 	// At least one entry is required when autoscaling is enabled.
 	NodeTypes []NodeTypeConfig `yaml:"node_types"`
-
-	// AWS-specific configuration.
-	AWS *AWSConfig `yaml:"aws,omitempty"`
 }
 
 // NodeTypeConfig maps a cloud provider instance type to its resource equivalents.
@@ -89,31 +115,28 @@ type NodeTypeConfig struct {
 	MemoryGB     float64 `yaml:"memory_gb"`
 }
 
-// AWSConfig holds AWS-specific settings for the autoscaler.
-type AWSConfig struct {
-	Region          string `yaml:"region"`
-	AMI             string `yaml:"ami"`
-	KeyName         string `yaml:"key_name"`
-	SubnetID        string `yaml:"subnet_id"`
-	SecurityGroupID string `yaml:"security_group_id"`
+var store *FluxConfig
 
-	AccessKeyID     string `yaml:"access_key_id,omitempty"`
-	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
-
-	// SSHKeyPath is the local path to the private key (.pem) used to SSH into
-	// newly provisioned instances for the bootstrap step.
-	// If empty, provisioning relies entirely on user-data.
-	SSHKeyPath string `yaml:"ssh_key_path,omitempty"`
-
-	// SSHUser is the OS user to log in as during bootstrap (default: "ec2-user").
-	SSHUser string `yaml:"ssh_user,omitempty"`
-
-	// AgentVersion is the flux-agent release version to fetch from GitHub
-	// Releases and install as a .deb on newly provisioned nodes (e.g. "0.1.0").
-	AgentVersion string `yaml:"agent_version,omitempty"`
+// Load reads and parses the config file, storing it in the global read-only store.
+// Must be called once at startup before any Get calls.
+func Load(path string) error {
+	cfg, err := parse(path)
+	if err != nil {
+		return err
+	}
+	store = cfg
+	return nil
 }
 
-func LoadFluxConfig(path string) (*FluxConfig, error) {
+// Get returns the global config. Panics if Load has not been called.
+func Get() *FluxConfig {
+	if store == nil {
+		panic("config.Load must be called before config.Get")
+	}
+	return store
+}
+
+func parse(path string) (*FluxConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -135,52 +158,60 @@ func LoadFluxConfig(path string) (*FluxConfig, error) {
 		panic("grpc requires ca_cert, cert, and key — or set insecure: true")
 	}
 
-	// Defaults
+	if config.RedisAddr == "" {
+		config.RedisAddr = "localhost:6379"
+	}
 	if config.AgentPort == 0 {
 		config.AgentPort = 50052
 	}
 
-	if config.Autoscaling != nil {
-		a := config.Autoscaling
-
-		if a.Enabled && a.Name == "" {
-			return nil, fmt.Errorf("autoscaling.name is required when autoscaling is enabled")
-		}
-
-		if a.CPUUpperThreshold == 0 {
-			a.CPUUpperThreshold = 80.0
-		}
-		if a.CPULowerThreshold == 0 {
-			a.CPULowerThreshold = 20.0
-		}
-		if a.MemUpperThreshold == 0 {
-			a.MemUpperThreshold = 80.0
-		}
-		if a.MemLowerThreshold == 0 {
-			a.MemLowerThreshold = 20.0
-		}
-		if a.EvaluationWindowSec == 0 {
-			a.EvaluationWindowSec = 60
-		}
-		if a.PollIntervalSec == 0 {
-			a.PollIntervalSec = 10
-		}
-		if a.CooldownSec == 0 {
-			a.CooldownSec = 300
-		}
-		if a.MaxNodes == 0 {
-			a.MaxNodes = 10
-		}
-		if a.MinNodes == 0 {
-			a.MinNodes = 1
-		}
-		if a.Enabled && len(a.NodeTypes) == 0 {
-			return nil, fmt.Errorf("autoscaling.node_types must have at least one entry when autoscaling is enabled")
-		}
-		if a.AWS != nil && a.AWS.SSHUser == "" {
-			a.AWS.SSHUser = "ec2-user"
+	if config.Providers != nil {
+		if p := config.Providers.AWS; p != nil {
+			if p.SSHUser == "" {
+				p.SSHUser = "ec2-user"
+			}
+			if p.Autoscaling != nil {
+				a := p.Autoscaling
+				applyAutoscaleDefaults(a)
+				if a.Enabled && a.Name == "" {
+					return nil, fmt.Errorf("providers.aws.autoscaling.name is required when autoscaling is enabled")
+				}
+				if a.Enabled && len(a.NodeTypes) == 0 {
+					return nil, fmt.Errorf("providers.aws.autoscaling.node_types must have at least one entry when autoscaling is enabled")
+				}
+			}
 		}
 	}
 
 	return &config, nil
+}
+
+func applyAutoscaleDefaults(a *AutoscaleConfig) {
+	if a.CPUUpperThreshold == 0 {
+		a.CPUUpperThreshold = 80.0
+	}
+	if a.CPULowerThreshold == 0 {
+		a.CPULowerThreshold = 20.0
+	}
+	if a.MemUpperThreshold == 0 {
+		a.MemUpperThreshold = 80.0
+	}
+	if a.MemLowerThreshold == 0 {
+		a.MemLowerThreshold = 20.0
+	}
+	if a.EvaluationWindowSec == 0 {
+		a.EvaluationWindowSec = 60
+	}
+	if a.PollIntervalSec == 0 {
+		a.PollIntervalSec = 10
+	}
+	if a.CooldownSec == 0 {
+		a.CooldownSec = 300
+	}
+	if a.MaxNodes == 0 {
+		a.MaxNodes = 10
+	}
+	if a.MinNodes == 0 {
+		a.MinNodes = 1
+	}
 }

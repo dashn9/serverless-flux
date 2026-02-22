@@ -22,29 +22,20 @@ import (
 // provider-agnostic helpers.
 type AWSProvider struct {
 	ec2Client    *ec2.Client
-	cfg          *config.AWSConfig
-	fluxCfg      *config.AutoscaleConfig
-	agentPort    int
-	redisAddr    string
-	agentGRPC    *config.AgentGRPCConfig
 	bootstrapper *SSHBootstrapper // nil when ssh_key_path is not configured
 	seqNum       int
 }
 
 // NewAWSProvider creates an AWS cloud provider with a configured EC2 client.
-func NewAWSProvider(
-	awsCfg *config.AWSConfig,
-	fluxCfg *config.AutoscaleConfig,
-	agentPort int,
-	redisAddr string,
-	agentGRPC *config.AgentGRPCConfig,
-) (*AWSProvider, error) {
+func NewAWSProvider() (*AWSProvider, error) {
+	cfg := config.Get().Providers.AWS
+
 	opts := []func(*awsconfig.LoadOptions) error{
-		awsconfig.WithRegion(awsCfg.Region),
+		awsconfig.WithRegion(cfg.Region),
 	}
-	if awsCfg.AccessKeyID != "" && awsCfg.SecretAccessKey != "" {
+	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
 		opts = append(opts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(awsCfg.AccessKeyID, awsCfg.SecretAccessKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		))
 	}
 
@@ -53,24 +44,21 @@ func NewAWSProvider(
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
+	fluxCfg := config.Get()
+
 	// Build the SSH bootstrapper only when a key path is provided.
 	// If absent, provisioning relies entirely on user-data.
 	bootstrapper := NewSSHBootstrapper(BootstrapConfig{
-		SSHKeyPath:   awsCfg.SSHKeyPath,
-		SSHUser:      awsCfg.SSHUser,
-		AgentPort:    agentPort,
-		RedisAddr:    redisAddr,
-		AgentVersion: awsCfg.AgentVersion,
-		AgentGRPC:    agentGRPC,
+		SSHKeyPath:   cfg.SSHKeyPath,
+		SSHUser:      cfg.SSHUser,
+		AgentPort:    fluxCfg.AgentPort,
+		RedisAddr:    fluxCfg.RedisAddr,
+		AgentVersion: cfg.AgentVersion,
+		AgentGRPC:    fluxCfg.GRPC.Agent,
 	})
 
 	return &AWSProvider{
 		ec2Client:    ec2.NewFromConfig(sdkCfg),
-		cfg:          awsCfg,
-		fluxCfg:      fluxCfg,
-		agentPort:    agentPort,
-		redisAddr:    redisAddr,
-		agentGRPC:    agentGRPC,
 		bootstrapper: bootstrapper,
 	}, nil
 }
@@ -81,7 +69,13 @@ func (a *AWSProvider) Name() string { return "aws" }
 // resources. The instance type is resolved from the operator-configured
 // node_types list — no hardcoded catalog.
 func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*ProvisionedNode, error) {
-	instanceType, err := selectInstanceType(a.fluxCfg.NodeTypes, resources)
+	cfg := config.Get().Providers.AWS
+	fluxCfg := config.Get()
+
+	if cfg.Autoscaling == nil || len(cfg.Autoscaling.NodeTypes) == 0 {
+		return nil, fmt.Errorf("no node_types configured")
+	}
+	instanceType, err := selectInstanceType(cfg.Autoscaling.NodeTypes, resources)
 	if err != nil {
 		return nil, fmt.Errorf("instance selection failed: %w", err)
 	}
@@ -92,21 +86,21 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	log.Printf("[aws] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",
 		instanceType, resources.VCPUs, resources.MemoryGB, agentID)
 
-	userData := buildAgentUserData(agentID, a.agentPort, a.redisAddr, a.cfg.AgentVersion, a.agentGRPC)
+	userData := buildAgentUserData(agentID, fluxCfg.AgentPort, fluxCfg.RedisAddr, cfg.AgentVersion, fluxCfg.GRPC.Agent)
 
 	input := &ec2.RunInstancesInput{
-		ImageId:      aws.String(a.cfg.AMI),
+		ImageId:      aws.String(cfg.AMI),
 		InstanceType: types.InstanceType(instanceType),
 		MinCount:     aws.Int32(1),
 		MaxCount:     aws.Int32(1),
-		KeyName:      aws.String(a.cfg.KeyName),
+		KeyName:      aws.String(cfg.KeyName),
 		UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
 
 		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{
 			{
 				DeviceIndex:              aws.Int32(0),
-				SubnetId:                 aws.String(a.cfg.SubnetID),
-				Groups:                   []string{a.cfg.SecurityGroupID},
+				SubnetId:                 aws.String(cfg.SubnetID),
+				Groups:                   []string{cfg.SecurityGroupID},
 				AssociatePublicIpAddress: aws.Bool(true),
 			},
 		},
@@ -130,7 +124,7 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	}
 
 	log.Printf("[aws] Launching %s — ami=%s subnet=%s sg=%s",
-		instanceType, a.cfg.AMI, a.cfg.SubnetID, a.cfg.SecurityGroupID)
+		instanceType, cfg.AMI, cfg.SubnetID, cfg.SecurityGroupID)
 
 	result, err := a.ec2Client.RunInstances(ctx, input)
 	if err != nil {

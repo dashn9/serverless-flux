@@ -66,15 +66,12 @@ type Autoscaler struct {
 	agentClient *client.AgentClient
 	provider    CloudProvider
 	cfg         *config.AutoscaleConfig
-	agentPort   int
 
 	mu              sync.Mutex
 	pressureHistory map[string][]pressureSample
 
 	lastScaleUp   time.Time
 	lastScaleDown time.Time
-
-	scaleHint chan struct{} // receives a signal when a request cannot be served
 }
 
 type pressureSample struct {
@@ -83,53 +80,24 @@ type pressureSample struct {
 	at         time.Time
 }
 
-// NewAutoscaler creates an autoscaler from the given config.
-// Returns nil if autoscaling is not enabled.
-func NewAutoscaler(
+// newAutoscaler creates an autoscaler for the given provider and config.
+// Returns nil if autoscaling is not enabled. Internal — called by ProvidersManager.
+func newAutoscaler(
 	reg *registry.Registry,
 	agentClient *client.AgentClient,
+	provider CloudProvider,
 	cfg *config.AutoscaleConfig,
-	agentPort int,
-	redisAddr string,
-	agentGRPC *config.AgentGRPCConfig,
 ) (*Autoscaler, error) {
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
 	}
-
-	var provider CloudProvider
-
-	switch cfg.Provider {
-	case "aws":
-		if cfg.AWS == nil {
-			log.Printf("[autoscaler] AWS provider selected but no AWS config provided, disabling")
-			return nil, nil
-		}
-		p, err := NewAWSProvider(cfg.AWS, cfg, agentPort, redisAddr, agentGRPC)
-		if err != nil {
-			return nil, err
-		}
-		provider = p
-	default:
-		log.Printf("[autoscaler] Unknown provider %q, disabling autoscaler", cfg.Provider)
-		return nil, nil
-	}
-
 	return &Autoscaler{
 		registry:        reg,
 		agentClient:     agentClient,
 		provider:        provider,
 		cfg:             cfg,
-		agentPort:       agentPort,
 		pressureHistory: make(map[string][]pressureSample),
-		scaleHint:       make(chan struct{}, 1),
 	}, nil
-}
-
-// ScaleHintCh returns the send side of the scale hint channel.
-// The API layer sends to it (non-blocking) when a request cannot be served.
-func (a *Autoscaler) ScaleHintCh() chan<- struct{} {
-	return a.scaleHint
 }
 
 // Start begins the monitoring loop in a background goroutine.
@@ -137,7 +105,7 @@ func (a *Autoscaler) Start(ctx context.Context) {
 	pollInterval := time.Duration(a.cfg.PollIntervalSec) * time.Second
 
 	log.Printf("[autoscaler] Started (provider=%s name=%s) — cpu_upper=%.0f%% mem_upper=%.0f%% cpu_lower=%.0f%% mem_lower=%.0f%% window=%ds cooldown=%ds max=%d min=%d poll=%ds",
-		a.cfg.Provider, a.cfg.Name,
+		a.provider.Name(), a.cfg.Name,
 		a.cfg.CPUUpperThreshold, a.cfg.MemUpperThreshold,
 		a.cfg.CPULowerThreshold, a.cfg.MemLowerThreshold,
 		a.cfg.EvaluationWindowSec, a.cfg.CooldownSec,
@@ -154,17 +122,9 @@ func (a *Autoscaler) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				a.poll(ctx)
-			case <-a.scaleHint:
-				a.handleScaleHint(ctx)
 			}
 		}
 	}()
-}
-
-// handleScaleHint responds to a demand-driven scale signal from the API layer.
-func (a *Autoscaler) handleScaleHint(ctx context.Context) {
-	log.Printf("[autoscaler] Scale hint received")
-	a.tryScaleUp(ctx)
 }
 
 // poll fetches metrics from all online agents, probes offline agents for
@@ -430,7 +390,7 @@ func (a *Autoscaler) spawnNode(ctx context.Context, resources NodeResources) {
 		return
 	}
 
-	agentAddr := fmt.Sprintf("%s:%d", node.PrivateIP, a.agentPort)
+	agentAddr := fmt.Sprintf("%s:%d", node.PrivateIP, config.Get().AgentPort)
 	a.registry.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType)
 
 	log.Printf("[autoscaler] Node spawned: agent=%s type=%s addr=%s — bootstrapping...",

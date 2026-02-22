@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
+	"flux/pkg/config"
 	"flux/pkg/models"
 
 	"github.com/redis/go-redis/v9"
@@ -15,16 +17,16 @@ type RedisMemory struct {
 	ctx    context.Context
 }
 
-func NewRedisMemory(addr string) *RedisMemory {
+func NewRedisMemory() *RedisMemory {
+	addr := config.Get().RedisAddr
 	opt, err := redis.ParseURL(addr)
 	if err != nil {
 		panic(err)
 	}
 
-	client := redis.NewClient(opt)
-
+	log.Printf("[memory] Connected to Redis at %s", addr)
 	return &RedisMemory{
-		client: client,
+		client: redis.NewClient(opt),
 		ctx:    context.Background(),
 	}
 }

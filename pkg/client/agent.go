@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -19,16 +20,18 @@ import (
 )
 
 type AgentClient struct {
-	mu      sync.RWMutex
-	conns   map[string]*grpc.ClientConn
-	grpcCfg *config.GRPCConfig
+	mu    sync.RWMutex
+	conns map[string]*grpc.ClientConn
 }
 
-func NewAgentClient(grpcCfg *config.GRPCConfig) *AgentClient {
-	return &AgentClient{
-		conns:   make(map[string]*grpc.ClientConn),
-		grpcCfg: grpcCfg,
+func NewAgentClient() *AgentClient {
+	grpcCfg := config.Get().GRPC
+	if grpcCfg.Insecure {
+		log.Printf("[grpc] client: plaintext (insecure mode)")
+	} else {
+		log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", grpcCfg.CACert, grpcCfg.CertFile)
 	}
+	return &AgentClient{conns: make(map[string]*grpc.ClientConn)}
 }
 
 func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
@@ -50,9 +53,10 @@ func (c *AgentClient) getConn(address string) (*grpc.ClientConn, error) {
 
 	var creds credentials.TransportCredentials
 
-	if !c.grpcCfg.Insecure {
+	grpcCfg := config.Get().GRPC
+	if !grpcCfg.Insecure {
 		var err error
-		creds, err = loadFluxTLSCredentials(c.grpcCfg)
+		creds, err = loadFluxTLSCredentials(grpcCfg)
 		if err != nil {
 			return nil, fmt.Errorf("load mTLS credentials: %w", err)
 		}
