@@ -44,7 +44,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize providers: %v", err)
 	}
-	provMgr.Start(ctx)
+	provMgr.Start()
 
 	go startHealthPolling(ctx, reg, agentClient)
 

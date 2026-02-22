@@ -22,6 +22,7 @@ import (
 // Initializer is implemented by ProvidersManager to bootstrap the minimum fleet.
 type Initializer interface {
 	InitializeNodes() (int, int)
+	TerminateNodes() int
 }
 
 // TODO(multi-flux): Support multiple Flux nodes forming a cluster that spans
@@ -540,16 +541,13 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 }
 
 func (s *APIServer) handleCleanupNodes(w http.ResponseWriter, r *http.Request) {
-	agents := s.registry.GetAllAgents()
-	for _, agent := range agents {
-		s.registry.DeregisterAgent(agent.ID)
-	}
-	log.Printf("[api] All nodes deregistered: count=%d", len(agents))
+	count := s.initializer.TerminateNodes()
+	log.Printf("[api] Nodes deregistered and terminated: count=%d", count)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "removed",
-		"removed": len(agents),
+		"removed": count,
 	})
 }
 

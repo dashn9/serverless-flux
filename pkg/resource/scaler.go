@@ -133,14 +133,14 @@ func (a *Autoscaler) poll(ctx context.Context) {
 	now := time.Now()
 	window := time.Duration(a.cfg.EvaluationWindowSec) * time.Second
 
-		for _, agent := range a.registry.GetAllAgents() {
+	for _, agent := range a.registry.GetAllAgents() {
 		if agent.Status == models.AgentDraining {
 			continue
 		}
 
 		status, err := a.agentClient.GetNodeStatus(agent)
 		if err != nil {
-			if agent.Status == models.AgentOnline {
+			if agent.Status != models.AgentDraining {
 				log.Printf("[autoscaler] Agent %s unreachable, marking offline: %v", agent.ID, err)
 				a.registry.SetOffline(agent.ID)
 			}

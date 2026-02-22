@@ -95,12 +95,12 @@ func (r *RedisMemory) SaveAgent(agent *models.Agent) error {
 		return err
 	}
 
-	key := fmt.Sprintf("agent:%s", agent.ID)
+	key := fmt.Sprintf("flux:agents:%s", agent.ID)
 	return r.client.Set(r.ctx, key, data, 0).Err()
 }
 
 func (r *RedisMemory) GetAgent(id string) (*models.Agent, error) {
-	key := fmt.Sprintf("agent:%s", id)
+	key := fmt.Sprintf("flux:agents:%s", id)
 	data, err := r.client.Get(r.ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -118,11 +118,11 @@ func (r *RedisMemory) GetAgent(id string) (*models.Agent, error) {
 }
 
 func (r *RedisMemory) DeleteAgent(id string) error {
-	return r.client.Del(r.ctx, fmt.Sprintf("agent:%s", id)).Err()
+	return r.client.Del(r.ctx, fmt.Sprintf("flux:agents:%s", id)).Err()
 }
 
 func (r *RedisMemory) GetAllAgents() ([]*models.Agent, error) {
-	keys, err := r.client.Keys(r.ctx, "agent:*").Result()
+	keys, err := r.client.Keys(r.ctx, "flux:agents:*").Result()
 	if err != nil {
 		return nil, err
 	}

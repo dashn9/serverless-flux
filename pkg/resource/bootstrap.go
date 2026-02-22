@@ -117,6 +117,15 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 		return fmt.Errorf("write agent.yaml: %w", err)
 	}
 
+	// Set AGENT_CONFIG for the systemd service via a drop-in override.
+	dropInCmd := fmt.Sprintf(
+		`sudo mkdir -p /etc/systemd/system/flux-agent.service.d && printf '[Service]\nEnvironment="AGENT_CONFIG=%s/agent.yaml"\n' | sudo tee /etc/systemd/system/flux-agent.service.d/override.conf > /dev/null`,
+		configDir,
+	)
+	if err := b.run(client, dropInCmd); err != nil {
+		return fmt.Errorf("write systemd env: %w", err)
+	}
+
 	// Restart the agent service with the new config.
 	if err := b.run(client, "sudo systemctl daemon-reload && sudo systemctl enable flux-agent && sudo systemctl restart flux-agent"); err != nil {
 		return fmt.Errorf("start service: %w", err)

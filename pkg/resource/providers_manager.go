@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"flux/pkg/client"
 	"flux/pkg/config"
@@ -26,8 +27,7 @@ type providerEntry struct {
 type ProvidersManager struct {
 	reg     *registry.Registry
 	entries []providerEntry
-	scalers []*Autoscaler // held only until Start is called
-	ctx     context.Context
+	scalers []*Autoscaler
 }
 
 // NewProvidersManager builds providers and autoscalers from the global config.
@@ -68,8 +68,8 @@ func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient
 
 // Start stores the server lifetime context, launches all autoscalers, then
 // releases references to them — they run autonomously with no external handles.
-func (m *ProvidersManager) Start(ctx context.Context) {
-	m.ctx = ctx
+func (m *ProvidersManager) Start() {
+	ctx := context.Background()
 	for _, a := range m.scalers {
 		a.Start(ctx)
 	}
@@ -80,10 +80,7 @@ func (m *ProvidersManager) Start(ctx context.Context) {
 // provider's configured minimum. Waits for all spawns to complete.
 // Returns (succeeded, attempted) — caller should treat succeeded < attempted as a failure.
 func (m *ProvidersManager) InitializeNodes() (int, int) {
-	ctx := m.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := context.Background()
 
 	agentPort := config.Get().AgentPort
 	var wg sync.WaitGroup
@@ -113,13 +110,11 @@ func (m *ProvidersManager) InitializeNodes() (int, int) {
 					log.Printf("[providers] Spawn failed: %v", err)
 					return
 				}
-				agentAddr := fmt.Sprintf("%s:%d", node.PrivateIP, agentPort)
-				m.reg.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType)
+				agentAddr := fmt.Sprintf("%s:%d", node.PublicIP, agentPort)
 				log.Printf("[providers] Node spawned: agent=%s type=%s addr=%s — bootstrapping...",
 					node.AgentID, node.InstanceType, agentAddr)
 				if err := e.provider.Bootstrap(ctx, node); err != nil {
 					log.Printf("[providers] Bootstrap failed for %s: %v — terminating", node.AgentID, err)
-					m.reg.DeregisterAgent(node.AgentID)
 					if terr := e.provider.TerminateNode(ctx, node.ProviderID); terr != nil {
 						log.Printf("[providers] Failed to terminate %s after bootstrap failure: %v", node.ProviderID, terr)
 					} else {
@@ -127,6 +122,7 @@ func (m *ProvidersManager) InitializeNodes() (int, int) {
 					}
 					return
 				}
+				m.reg.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType)
 				log.Printf("[providers] Bootstrap complete: agent=%s", node.AgentID)
 				succeeded.Add(1)
 			}()
@@ -135,4 +131,31 @@ func (m *ProvidersManager) InitializeNodes() (int, int) {
 
 	wg.Wait()
 	return int(succeeded.Load()), int(attempted.Load())
+}
+
+func (m *ProvidersManager) TerminateNodes() int {
+	agents := m.reg.GetAllAgents()
+	var wg sync.WaitGroup
+	var terminated atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	for _, e := range m.entries {
+		for _, agent := range agents {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				m.reg.DeregisterAgent(agent.ID)
+
+				if err := e.provider.TerminateNode(ctx, agent.ProviderID); err != nil {
+					log.Printf("[provider_manager] Terminate %s failed: %v", agent.ID, err)
+					return
+				}
+				log.Printf("[provider_manager] Terminated %s (nodes remaining: %d)", agent.ID, len(m.reg.GetAllAgents())-1)
+				terminated.Add(1)
+			}()
+		}
+	}
+	wg.Wait()
+	return int(terminated.Load())
 }
