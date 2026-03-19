@@ -69,9 +69,51 @@ providers:
           memory_gb: 32
 
       cpu_upper_threshold: 80
-      cpu_lower_threshold: 20
+      cpu_lower_threshold: 45
       mem_upper_threshold: 80
-      mem_lower_threshold: 20
+      mem_lower_threshold: 45
+
+      evaluation_window_sec: 60
+      poll_interval_sec: 10
+      cooldown_sec: 300
+
+  gcp:
+    project_id: my-project
+    zone: us-central1-a
+    image: projects/debian-cloud/global/images/family/debian-12
+
+    # service_account_email: flux-agent@my-project.iam.gserviceaccount.com
+
+    ssh_key_path: /home/user/.ssh/flux-agent-key.pem
+    ssh_user: ubuntu
+    agent_version: "0.1.0"
+
+    labels:
+      environment: production
+      team: platform
+
+    autoscaling:
+      enabled: true
+      name: gcp-prod
+
+      min_nodes: 1
+      max_nodes: 10
+
+      node_types:
+        - instance_type: e2-standard-2
+          vcpus: 2
+          memory_gb: 8
+        - instance_type: e2-standard-4
+          vcpus: 4
+          memory_gb: 16
+        - instance_type: e2-standard-8
+          vcpus: 8
+          memory_gb: 32
+
+      cpu_upper_threshold: 80
+      cpu_lower_threshold: 45
+      mem_upper_threshold: 80
+      mem_lower_threshold: 45
 
       evaluation_window_sec: 60
       poll_interval_sec: 10

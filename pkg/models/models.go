@@ -17,6 +17,10 @@ type Agent struct {
 	// Populated for dynamically provisioned nodes; empty for statically configured ones.
 	InstanceType string
 
+	// Provider is the name of the cloud provider that owns this agent (e.g. "aws", "gcp").
+	// Empty for statically configured agents.
+	Provider string
+
 	NodeStatus *NodeStatus
 }
 

@@ -63,6 +63,30 @@ func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient
 		m.entries = append(m.entries, entry)
 	}
 
+	if gcpCfg := providersCfg.GCP; gcpCfg != nil {
+		provider, err := NewGCPProvider()
+		if err != nil {
+			return nil, fmt.Errorf("gcp provider: %w", err)
+		}
+
+		entry := providerEntry{provider: provider}
+
+		if as := gcpCfg.Autoscaling; as != nil {
+			entry.minNodes = as.MinNodes
+			entry.nodeTypes = as.NodeTypes
+
+			a, err := newAutoscaler(reg, agentClient, provider, as)
+			if err != nil {
+				return nil, fmt.Errorf("gcp autoscaler: %w", err)
+			}
+			if a != nil {
+				m.scalers = append(m.scalers, a)
+			}
+		}
+
+		m.entries = append(m.entries, entry)
+	}
+
 	return m, nil
 }
 
@@ -122,7 +146,7 @@ func (m *ProvidersManager) InitializeNodes() (int, int) {
 					}
 					return
 				}
-				m.reg.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType)
+				m.reg.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType, e.provider.Name())
 				log.Printf("[providers] Bootstrap complete: agent=%s", node.AgentID)
 				succeeded.Add(1)
 			}()
@@ -142,6 +166,9 @@ func (m *ProvidersManager) TerminateNodes() int {
 
 	for _, e := range m.entries {
 		for _, agent := range agents {
+			if agent.Provider != e.provider.Name() {
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -151,7 +178,7 @@ func (m *ProvidersManager) TerminateNodes() int {
 					log.Printf("[provider_manager] Terminate %s failed: %v", agent.ID, err)
 					return
 				}
-				log.Printf("[provider_manager] Terminated %s (nodes remaining: %d)", agent.ID, len(m.reg.GetAllAgents())-1)
+				log.Printf("[provider_manager] Terminated %s (nodes remaining: %d)", agent.ID, len(m.reg.GetAllAgents()))
 				terminated.Add(1)
 			}()
 		}

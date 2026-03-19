@@ -16,7 +16,7 @@ func NewRegistry(mem memory.Memory) *Registry {
 	return &Registry{memory: mem}
 }
 
-func (r *Registry) RegisterAgent(id, address, providerID, instanceType string) {
+func (r *Registry) RegisterAgent(id, address, providerID, instanceType, provider string) {
 	agent := &models.Agent{
 		ID:            id,
 		Address:       address,
@@ -24,13 +24,14 @@ func (r *Registry) RegisterAgent(id, address, providerID, instanceType string) {
 		Status:        models.AgentOnline,
 		ProviderID:    providerID,
 		InstanceType:  instanceType,
+		Provider:      provider,
 	}
 	if err := r.memory.SaveAgent(agent); err != nil {
 		log.Printf("[registry] Failed to persist agent %s: %v", id, err)
 	}
 }
 
-func (r *Registry) RegisterOfflineAgent(id, address, providerID, instanceType string) {
+func (r *Registry) RegisterOfflineAgent(id, address, providerID, instanceType, provider string) {
 	agent := &models.Agent{
 		ID:            id,
 		Address:       address,
@@ -38,6 +39,7 @@ func (r *Registry) RegisterOfflineAgent(id, address, providerID, instanceType st
 		Status:        models.AgentOffline,
 		ProviderID:    providerID,
 		InstanceType:  instanceType,
+		Provider:      provider,
 	}
 	if err := r.memory.SaveAgent(agent); err != nil {
 		log.Printf("[registry] Failed to persist agent %s: %v", id, err)

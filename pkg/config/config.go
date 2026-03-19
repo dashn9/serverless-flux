@@ -38,6 +38,7 @@ type AgentGRPCConfig struct {
 // Only providers with a non-nil entry are active.
 type ProvidersConfig struct {
 	AWS *AWSProviderConfig `yaml:"aws,omitempty"`
+	GCP *GCPProviderConfig `yaml:"gcp,omitempty"`
 }
 
 // AWSProviderConfig holds all AWS-specific settings plus the autoscaling
@@ -67,6 +68,26 @@ type AWSProviderConfig struct {
 	AgentVersion string `yaml:"agent_version,omitempty"`
 
 	Tags map[string]string `yaml:"tags,omitempty"`
+
+	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
+}
+
+// GCPProviderConfig holds all GCP-specific settings plus the autoscaling
+// configuration that applies to this provider's node fleet.
+type GCPProviderConfig struct {
+	ProjectID string `yaml:"project_id"`
+	Zone      string `yaml:"zone"`
+	Image     string `yaml:"image"`
+
+	// ServiceAccountEmail is the GCE service account attached to spawned instances.
+	// If empty, the project default service account is used.
+	ServiceAccountEmail string `yaml:"service_account_email,omitempty"`
+
+	SSHKeyPath string `yaml:"ssh_key_path,omitempty"`
+	SSHUser    string `yaml:"ssh_user,omitempty"`
+
+	AgentVersion string            `yaml:"agent_version,omitempty"`
+	Labels       map[string]string `yaml:"labels,omitempty"`
 
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
 }
@@ -181,6 +202,12 @@ func parse(path string) (*FluxConfig, error) {
 				if a.Enabled && len(a.NodeTypes) == 0 {
 					return nil, fmt.Errorf("providers.aws.autoscaling.node_types must have at least one entry when autoscaling is enabled")
 				}
+			}
+		}
+
+		if p := config.Providers.GCP; p != nil {
+			if p.SSHUser == "" {
+				p.SSHUser = "ubuntu"
 			}
 		}
 	}

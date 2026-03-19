@@ -71,6 +71,7 @@ type AgentInfo struct {
 	LastHeartbeat string          `json:"last_heartbeat"`
 	ProviderID    string          `json:"provider_id,omitempty"`
 	InstanceType  string          `json:"instance_type,omitempty"`
+	Provider      string          `json:"provider,omitempty"`
 	NodeStatus    *NodeStatusInfo `json:"node_status,omitempty"`
 }
 
@@ -269,6 +270,7 @@ func (s *APIServer) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 			LastHeartbeat: agent.LastHeartbeat.Format(time.RFC3339),
 			ProviderID:    agent.ProviderID,
 			InstanceType:  agent.InstanceType,
+			Provider:      agent.Provider,
 		}
 
 		if agent.NodeStatus != nil {
@@ -308,7 +310,7 @@ func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.RegisterAgent(req.ID, req.Address, req.NodeId, "")
+	s.registry.RegisterAgent(req.ID, req.Address, req.NodeId, "", "")
 	log.Printf("[api] Node registered: id=%s address=%s node_id=%s", req.ID, req.Address, req.NodeId)
 
 	w.Header().Set("Content-Type", "application/json")

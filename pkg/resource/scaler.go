@@ -61,6 +61,11 @@ func largestInstanceType(nodeTypes []config.NodeTypeConfig) string {
 }
 
 // Autoscaler monitors agent resource pressure and triggers scale events.
+// TODO: When multiple providers are active, each autoscaler evaluates pressure
+// across ALL online agents but only scales its own fleet. This means both can
+// react to the same pressure signal simultaneously — causing double scale-up or
+// double scale-down. A future revision should coordinate across providers
+// (e.g. a shared scaling lock or a single orchestrator that delegates to providers).
 type Autoscaler struct {
 	registry    *registry.Registry
 	agentClient *client.AgentClient
@@ -250,7 +255,7 @@ func (a *Autoscaler) tryScaleUp(ctx context.Context) {
 
 	var candidate *models.Agent
 	for _, ag := range allAgents {
-		if ag.ProviderID != "" && ag.InstanceType != maxType && ag.ActiveCount == 0 {
+		if ag.Provider == a.provider.Name() && ag.InstanceType != maxType && ag.ActiveCount == 0 {
 			candidate = ag
 			break
 		}
@@ -303,10 +308,10 @@ func (a *Autoscaler) checkAndTriggerScale(ctx context.Context) {
 		return
 	}
 
-	// Pick the least-pressured idle managed node to decommission.
+	// Pick the least-pressured idle node owned by this provider to decommission.
 	var target *models.Agent
 	for _, ag := range allAgents {
-		if ag.ProviderID == "" || ag.ActiveCount > 0 || ag.Status == models.AgentDraining {
+		if ag.Provider != a.provider.Name() || ag.ActiveCount > 0 || ag.Status == models.AgentDraining {
 			continue
 		}
 		if target == nil || ag.Pressure() < target.Pressure() {
@@ -387,7 +392,7 @@ func (a *Autoscaler) spawnNode(ctx context.Context, resources NodeResources) {
 	}
 
 	agentAddr := fmt.Sprintf("%s:%d", node.PrivateIP, config.Get().AgentPort)
-	a.registry.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType)
+	a.registry.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType, a.provider.Name())
 
 	log.Printf("[autoscaler] Node spawned: agent=%s type=%s addr=%s — bootstrapping...",
 		node.AgentID, node.InstanceType, agentAddr)
