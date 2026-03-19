@@ -15,6 +15,7 @@ import (
 	"flux/pkg/config"
 	"flux/pkg/memory"
 	"flux/pkg/models"
+	"flux/pkg/pki"
 	"flux/pkg/registry"
 	scaler "flux/pkg/resource"
 )
@@ -31,16 +32,22 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	pkiMgr, err := pki.New(config.Get().CertsDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize PKI: %v", err)
+	}
+	log.Printf("PKI initialized (certs_dir=%s)", config.Get().CertsDir)
+
 	mem := memory.NewRedisMemory()
 	defer mem.Close()
 
 	reg := registry.NewRegistry(mem)
-	agentClient := client.NewAgentClient()
+	agentClient := client.NewAgentClient(pkiMgr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	provMgr, err := scaler.NewProvidersManager(reg, agentClient)
+	provMgr, err := scaler.NewProvidersManager(reg, agentClient, pkiMgr)
 	if err != nil {
 		log.Fatalf("Failed to initialize providers: %v", err)
 	}

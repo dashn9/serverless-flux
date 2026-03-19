@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"flux/pkg/config"
+	"flux/pkg/pki"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -16,34 +16,27 @@ import (
 const agentDebURLTemplate = "https://github.com/dashn9/serverless-agent/releases/download/v%s/flux-agent_%s_amd64.deb"
 
 // buildAgentYAML returns the agent.yaml content for the given node.
-func buildAgentYAML(agentID string, port int, redisAddr string, configDir string, agentGRPC *config.AgentGRPCConfig) string {
-	tlsBlock := ""
-	if agentGRPC != nil {
-		tlsBlock = fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert: %s/tls/agent.pem\n  key: %s/tls/agent-key.pem\n",
-			configDir, configDir, configDir)
-	}
+func buildAgentYAML(agentID string, port int, redisAddr string, configDir string) string {
+	tlsBlock := fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert: %s/tls/agent.pem\n  key: %s/tls/agent-key.pem\n",
+		configDir, configDir, configDir)
 	return fmt.Sprintf("agent_id: %s\nport: \"%d\"\nredis_addr: \"%s\"\n%s", agentID, port, redisAddr, tlsBlock)
 }
 
 // BootstrapConfig holds everything needed to configure and start an agent on a
 // freshly provisioned node via SSH. It is cloud-provider-agnostic.
 type BootstrapConfig struct {
+	// PKI provides the SSH private key for dialling and mints per-agent TLS certs.
+	PKI *pki.PKI
+
 	// SSH credentials
-	SSHKeyPath string // local path to the private key (.pem / openssh)
-	SSHUser    string // remote OS user (e.g. "ec2-user", "ubuntu")
+	SSHUser string // remote OS user (e.g. "ec2-user", "ubuntu")
 
 	// Agent runtime configuration written to the remote node.
-	// AgentID is not stored here — it is taken from ProvisionedNode at bootstrap time.
 	AgentPort int
 	RedisAddr string
 
-	// AgentVersion is used to locate the correct config directory.
-	// /etc/flux-agent for .deb installs; /opt/flux-agent for manual installs.
+	// AgentVersion is used to download the .deb from GitHub Releases.
 	AgentVersion string
-
-	// AgentGRPC, when set, uploads the agent TLS cert files from the local
-	// Flux host to the node during bootstrap, then references them in agent.yaml.
-	AgentGRPC *config.AgentGRPCConfig
 }
 
 // SSHBootstrapper installs and starts the flux-agent on a remote node over SSH.
@@ -54,17 +47,13 @@ type SSHBootstrapper struct {
 }
 
 // NewSSHBootstrapper returns a bootstrapper for the given config.
-// Returns nil if SSHKeyPath is empty (no SSH bootstrap configured).
 func NewSSHBootstrapper(cfg BootstrapConfig) *SSHBootstrapper {
-	if cfg.SSHKeyPath == "" {
-		return nil
-	}
 	return &SSHBootstrapper{cfg: cfg}
 }
 
 // Bootstrap connects to node.PublicIP and:
 //  1. Downloads and installs the flux-agent .deb (if AgentVersion is set).
-//  2. Deploys mTLS certificates (if AgentGRPC is configured).
+//  2. Mints and uploads mTLS certificates for the agent.
 //  3. Writes agent.yaml with the runtime config.
 //  4. Enables and starts the flux-agent systemd service.
 func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) error {
@@ -93,25 +82,30 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
-	// Upload agent TLS certs from the local Flux host if configured.
-	if b.cfg.AgentGRPC != nil {
-		for _, t := range []struct{ local, remote string }{
-			{b.cfg.AgentGRPC.CACert, configDir + "/tls/ca.pem"},
-			{b.cfg.AgentGRPC.CertFile, configDir + "/tls/agent.pem"},
-			{b.cfg.AgentGRPC.KeyFile, configDir + "/tls/agent-key.pem"},
-		} {
-			if err := b.upload(client, t.local, t.remote); err != nil {
-				return fmt.Errorf("upload TLS %s: %w", t.local, err)
-			}
-		}
-		if err := b.run(client, fmt.Sprintf("sudo chmod 600 %s/tls/*", configDir)); err != nil {
-			return fmt.Errorf("chmod tls: %w", err)
-		}
-		log.Printf("[bootstrap] Agent TLS certs deployed to %s", node.PublicIP)
+	// Mint and upload agent TLS certs.
+	certPEM, keyPEM, caPEM, err := b.cfg.PKI.MintAgentCert(node.AgentID)
+	if err != nil {
+		return fmt.Errorf("mint agent cert: %w", err)
 	}
+	for _, t := range []struct {
+		data   []byte
+		remote string
+	}{
+		{caPEM, configDir + "/tls/ca.pem"},
+		{certPEM, configDir + "/tls/agent.pem"},
+		{keyPEM, configDir + "/tls/agent-key.pem"},
+	} {
+		if err := b.uploadBytes(client, t.data, t.remote); err != nil {
+			return fmt.Errorf("upload TLS %s: %w", t.remote, err)
+		}
+	}
+	if err := b.run(client, fmt.Sprintf("sudo chmod 600 %s/tls/*", configDir)); err != nil {
+		return fmt.Errorf("chmod tls: %w", err)
+	}
+	log.Printf("[bootstrap] Agent TLS certs deployed to %s", node.PublicIP)
 
 	// Write agent.yaml.
-	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, configDir, b.cfg.AgentGRPC)
+	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, configDir)
 	writeCmd := fmt.Sprintf("sudo tee %s/agent.yaml > /dev/null <<'EOF'\n%sEOF", configDir, agentYAML)
 	if err := b.run(client, writeCmd); err != nil {
 		return fmt.Errorf("write agent.yaml: %w", err)
@@ -135,12 +129,12 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 	return nil
 }
 
-// dial opens an SSH connection, retrying until the host is reachable or the
-// context is cancelled. Handles the common case of an instance still booting.
+// dial opens an SSH connection using the PKI-managed SSH key, retrying until
+// the host is reachable or the context is cancelled.
 func (b *SSHBootstrapper) dial(ctx context.Context, host string) (*ssh.Client, error) {
-	keyData, err := os.ReadFile(b.cfg.SSHKeyPath)
+	keyData, err := os.ReadFile(b.cfg.PKI.SSHPrivateKeyPath())
 	if err != nil {
-		return nil, fmt.Errorf("read SSH key %s: %w", b.cfg.SSHKeyPath, err)
+		return nil, fmt.Errorf("read SSH key %s: %w", b.cfg.PKI.SSHPrivateKeyPath(), err)
 	}
 	signer, err := ssh.ParsePrivateKey(keyData)
 	if err != nil {
@@ -190,13 +184,8 @@ func (b *SSHBootstrapper) run(client *ssh.Client, cmd string) error {
 	return nil
 }
 
-// upload copies a local file to a remote path by piping its contents over SSH.
-func (b *SSHBootstrapper) upload(client *ssh.Client, localPath, remotePath string) error {
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", localPath, err)
-	}
-
+// uploadBytes writes raw bytes to a remote path over SSH.
+func (b *SSHBootstrapper) uploadBytes(client *ssh.Client, data []byte, remotePath string) error {
 	sess, err := client.NewSession()
 	if err != nil {
 		return err

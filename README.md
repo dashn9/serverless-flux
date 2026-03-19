@@ -1,6 +1,6 @@
 # Flux
 
-Lightweight serverless platform. Flux is the control plane; agents are the workers. Agents run functions natively (no Docker) using cgroups v2 for memory isolation.
+Flux is the control plane for Serverless Fabric, a lightweight serverless platform that executes functions natively on Linux using cgroups v2 for memory isolation — no Docker required. Flux routes execution requests to worker [agents](https://github.com/dashn9/serverless-agent), manages the agent registry, and coordinates autoscaling across AWS EC2 and GCP Compute Engine. When provisioning new nodes, Flux installs the matching agent version from its own GitHub Releases.
 
 ## Architecture
 
@@ -19,6 +19,16 @@ Flux (control plane)
 - **Agents** execute functions inside isolated processes with cgroup memory limits.
 - **Redis** persists agent and function state across restarts.
 - **Config** is a global read-only store — loaded once at startup from `flux.yaml`, never passed through function parameters.
+
+## Install from .deb
+
+Download the latest release from [GitHub Releases](https://github.com/dashn9/serverless-flux/releases):
+
+```bash
+sudo dpkg -i flux_*.deb
+```
+
+The package installs a systemd service and places an example config at `/etc/flux/flux.yaml.example`.
 
 ## Configuration
 
@@ -96,7 +106,7 @@ openssl x509 -req -in agent.csr -CA certs/ca.pem -CAkey certs/ca.key -CAcreatese
 # 1. Start Redis
 redis-server
 
-# 2. Start an agent (see ../agent)
+# 2. Start an agent (see https://github.com/dashn9/serverless-agent)
 AGENT_CONFIG=agent.yaml go run main.go
 
 # 3. Start Flux
@@ -105,13 +115,15 @@ go run main.go
 
 ## API
 
+All protected endpoints require an `X-API-Key` header (or `Authorization: Bearer <key>`).
+
 ### Public
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `GET` | `/agents` | List all agents with node status |
 
-### Protected (require `X-API-Key` header)
+### Protected
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/initialize` | Spawn min nodes for each configured provider |
@@ -119,6 +131,8 @@ go run main.go
 | `PUT` | `/functions` | Register a function (YAML body) |
 | `PUT` | `/deploy/{name}` | Deploy function code (zip body) |
 | `POST` | `/execute/{name}` | Execute a function |
+| `DELETE` | `/nodes` | Terminate and deregister all managed nodes |
+| `GET` | `/resources` | Flux and agent CPU/memory/uptime stats |
 
 ### Function YAML
 
@@ -144,22 +158,22 @@ curl -X POST http://localhost:7227/execute/hello-world \
   -d '{"args": ["arg1"]}'
 ```
 
-Returns `429` when no agent has sufficient resources to run the function.
+Returns `429` when no agent has sufficient resources to fit the function. If an agent is at its concurrency limit, the behaviour depends on `max_concurrency_behavior`: `exit` returns `503` immediately, `wait` retries until capacity frees up.
 
 ## Autoscaling
 
 The autoscaler runs autonomously — it is started by `ProvidersManager` and holds no external references after that.
 
-**Scale-up:** triggered when every online agent has sustained CPU ≥ `cpu_upper_threshold` (or mem ≥ `mem_upper_threshold`) for the full `evaluation_window_sec`. Spawns the smallest configured `node_type` first; at `max_nodes`, upgrades an idle node to the largest type instead.
+**Scale-up:** triggered when every online agent has sustained CPU >= `cpu_upper_threshold` (or mem >= `mem_upper_threshold`) for the full `evaluation_window_sec`. Spawns the smallest configured `node_type` first; at `max_nodes`, upgrades an idle node to the largest type instead.
 
-**Scale-down:** triggered when every agent has sustained CPU ≤ `cpu_lower_threshold` and mem ≤ `mem_lower_threshold`. Terminates the least-loaded idle managed node.
+**Scale-down:** triggered when every agent has sustained CPU <= `cpu_lower_threshold` and mem <= `mem_lower_threshold`. Terminates the least-loaded idle managed node.
 
 **Cooldown** (`cooldown_sec`) prevents back-to-back events. Operator can tune thresholds and cooldown to control responsiveness vs. cost.
 
 ## Node Provisioning Flow
 
-1. `POST /initialize` → `ProvidersManager.InitializeNodes` → spawns `min_nodes - current` nodes concurrently.
-2. Each spawn: `CloudProvider.SpawnNode` (EC2 RunInstances) → waits for IPs → `RegisterOfflineAgent`.
+1. `POST /initialize` spawns `min_nodes - current` nodes concurrently per provider.
+2. Each spawn: `CloudProvider.SpawnNode` (EC2 RunInstances / GCP Insert) → waits for IPs → `RegisterOfflineAgent`.
 3. If `ssh_key_path` is set: SSH bootstrap uploads `agent.yaml` + TLS certs → restarts `flux-agent` service.
 4. If only `agent_version` is set: user-data script downloads the `.deb` from GitHub Releases, writes `agent.yaml`, starts service.
 5. Autoscaler probes offline agents on every poll tick; first successful contact promotes them to online.

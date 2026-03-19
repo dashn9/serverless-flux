@@ -12,26 +12,25 @@ import (
 
 	"flux/pkg/config"
 	"flux/pkg/models"
+	"flux/pkg/pki"
 	pb "flux/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type AgentClient struct {
 	mu      sync.RWMutex
 	clients map[string]pb.AgentServiceClient
+	pki     *pki.PKI
 }
 
-func NewAgentClient() *AgentClient {
-	grpcCfg := config.Get().GRPC
-	if grpcCfg.Insecure {
-		log.Printf("[grpc] client: plaintext (insecure mode)")
-	} else {
-		log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", grpcCfg.CACert, grpcCfg.CertFile)
+func NewAgentClient(p *pki.PKI) *AgentClient {
+	log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", p.CACertPath(), p.FluxCertPath())
+	return &AgentClient{
+		clients: make(map[string]pb.AgentServiceClient),
+		pki:     p,
 	}
-	return &AgentClient{clients: make(map[string]pb.AgentServiceClient)}
 }
 
 func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
@@ -49,16 +48,9 @@ func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
 		return cl, nil
 	}
 
-	grpcCfg := config.Get().GRPC
-	var creds credentials.TransportCredentials
-	if !grpcCfg.Insecure {
-		var err error
-		creds, err = loadFluxTLSCredentials(grpcCfg)
-		if err != nil {
-			return nil, fmt.Errorf("load mTLS credentials: %w", err)
-		}
-	} else {
-		creds = insecure.NewCredentials()
+	creds, err := c.loadTLSCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS credentials: %w", err)
 	}
 
 	conn, err := grpc.NewClient(address,
@@ -76,14 +68,13 @@ func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
 	return cl, nil
 }
 
-// loadFluxTLSCredentials builds mTLS client credentials for Flux connecting to agents.
-func loadFluxTLSCredentials(grpcCfg *config.GRPCConfig) (credentials.TransportCredentials, error) {
-	cert, err := tls.LoadX509KeyPair(grpcCfg.CertFile, grpcCfg.KeyFile)
+func (c *AgentClient) loadTLSCredentials() (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(c.pki.FluxCertPath(), c.pki.FluxKeyPath())
 	if err != nil {
 		return nil, fmt.Errorf("load flux cert/key: %w", err)
 	}
 
-	caData, err := os.ReadFile(grpcCfg.CACert)
+	caData, err := os.ReadFile(c.pki.CACertPath())
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert: %w", err)
 	}

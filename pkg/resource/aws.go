@@ -2,11 +2,13 @@ package scaler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"flux/pkg/config"
+	"flux/pkg/pki"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -15,18 +17,21 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+const ec2KeyPairName = "flux-agent"
+
 // AWSProvider implements CloudProvider for Amazon Web Services.
 // It is responsible only for EC2-specific operations: launching and terminating
 // instances. SSH bootstrap and user-data generation are handled by shared,
 // provider-agnostic helpers.
 type AWSProvider struct {
 	ec2Client    *ec2.Client
-	bootstrapper *SSHBootstrapper // nil when ssh_key_path is not configured
+	bootstrapper *SSHBootstrapper
 	seqNum       int
 }
 
 // NewAWSProvider creates an AWS cloud provider with a configured EC2 client.
-func NewAWSProvider() (*AWSProvider, error) {
+// The PKI-managed SSH public key is auto-imported as an EC2 key pair.
+func NewAWSProvider(pkiMgr *pki.PKI) (*AWSProvider, error) {
 	cfg := config.Get().Providers.AWS
 
 	opts := []func(*awsconfig.LoadOptions) error{
@@ -43,21 +48,25 @@ func NewAWSProvider() (*AWSProvider, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
+	ec2Client := ec2.NewFromConfig(sdkCfg)
+
+	// Import the PKI-managed SSH public key to EC2.
+	if err := importSSHKey(context.Background(), ec2Client, pkiMgr); err != nil {
+		return nil, fmt.Errorf("import SSH key pair: %w", err)
+	}
+
 	fluxCfg := config.Get()
 
-	// Build the SSH bootstrapper only when a key path is provided.
-	// If absent, provisioning relies entirely on user-data.
 	bootstrapper := NewSSHBootstrapper(BootstrapConfig{
-		SSHKeyPath:   cfg.SSHKeyPath,
+		PKI:          pkiMgr,
 		SSHUser:      cfg.SSHUser,
 		AgentPort:    fluxCfg.AgentPort,
 		RedisAddr:    fluxCfg.RedisAddr,
 		AgentVersion: cfg.AgentVersion,
-		AgentGRPC:    fluxCfg.GRPC.Agent,
 	})
 
 	return &AWSProvider{
-		ec2Client:    ec2.NewFromConfig(sdkCfg),
+		ec2Client:    ec2Client,
 		bootstrapper: bootstrapper,
 	}, nil
 }
@@ -89,7 +98,7 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		InstanceType: types.InstanceType(instanceType),
 		MinCount:     aws.Int32(1),
 		MaxCount:     aws.Int32(1),
-		KeyName:      aws.String(cfg.SSHKeyName),
+		KeyName:      aws.String(ec2KeyPairName),
 		// TODO: support explicit subnet/VPC targeting via config (subnet_id, vpc_id)
 		// for environments that don't use the default VPC.
 		SecurityGroupIds: []string{cfg.SecurityGroupID},
@@ -142,13 +151,8 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	}, nil
 }
 
-// Bootstrap delegates to the shared SSHBootstrapper. If no SSH key is
-// configured, it is a no-op and provisioning relies on user-data alone.
+// Bootstrap delegates to the shared SSHBootstrapper.
 func (a *AWSProvider) Bootstrap(ctx context.Context, node *ProvisionedNode) error {
-	if a.bootstrapper == nil {
-		log.Printf("[aws] No ssh_key_path — skipping SSH bootstrap for %s (user-data only)", node.AgentID)
-		return nil
-	}
 	return a.bootstrapper.Bootstrap(ctx, node)
 }
 
@@ -162,6 +166,26 @@ func (a *AWSProvider) TerminateNode(ctx context.Context, providerID string) erro
 		return fmt.Errorf("TerminateInstances %s: %w", providerID, err)
 	}
 	log.Printf("[aws] Instance %s terminated", providerID)
+	return nil
+}
+
+// importSSHKey imports the PKI-managed SSH public key as an EC2 key pair.
+// If the key pair already exists, it is left as-is (idempotent).
+func importSSHKey(ctx context.Context, client *ec2.Client, pkiMgr *pki.PKI) error {
+	_, err := client.ImportKeyPair(ctx, &ec2.ImportKeyPairInput{
+		KeyName:           aws.String(ec2KeyPairName),
+		PublicKeyMaterial: pkiMgr.SSHPublicKey(),
+	})
+	if err != nil {
+		// If the key pair already exists, that's fine.
+		var apiErr interface{ ErrorCode() string }
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidKeyPair.Duplicate" {
+			log.Printf("[aws] SSH key pair %q already exists", ec2KeyPairName)
+			return nil
+		}
+		return err
+	}
+	log.Printf("[aws] SSH key pair %q imported", ec2KeyPairName)
 	return nil
 }
 

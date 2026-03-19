@@ -10,6 +10,7 @@ import (
 
 	"flux/pkg/client"
 	"flux/pkg/config"
+	"flux/pkg/pki"
 	"flux/pkg/registry"
 )
 
@@ -31,7 +32,7 @@ type ProvidersManager struct {
 }
 
 // NewProvidersManager builds providers and autoscalers from the global config.
-func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient) (*ProvidersManager, error) {
+func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient, pkiMgr *pki.PKI) (*ProvidersManager, error) {
 	m := &ProvidersManager{reg: reg}
 
 	providersCfg := config.Get().Providers
@@ -40,7 +41,7 @@ func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient
 	}
 
 	if awsCfg := providersCfg.AWS; awsCfg != nil {
-		provider, err := NewAWSProvider()
+		provider, err := NewAWSProvider(pkiMgr)
 		if err != nil {
 			return nil, fmt.Errorf("aws provider: %w", err)
 		}
@@ -64,7 +65,7 @@ func NewProvidersManager(reg *registry.Registry, agentClient *client.AgentClient
 	}
 
 	if gcpCfg := providersCfg.GCP; gcpCfg != nil {
-		provider, err := NewGCPProvider()
+		provider, err := NewGCPProvider(pkiMgr)
 		if err != nil {
 			return nil, fmt.Errorf("gcp provider: %w", err)
 		}

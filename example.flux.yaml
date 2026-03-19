@@ -5,21 +5,9 @@ redis_addr: localhost:6379
 # agent_port is the gRPC port Flux dials on each agent (default: 50052)
 agent_port: 50052
 
-# gRPC transport security — how Flux dials agents.
-# Set insecure: true for development; provide certs for production.
-grpc:
-  insecure: true
-# grpc:
-#   insecure: false
-#   ca_cert: certs/ca.pem
-#   cert:    certs/flux.pem
-#   key:     certs/flux.key
-#   # Local paths on the Flux host to the agent TLS cert files.
-#   # Uploaded to each node during SSH bootstrap.
-#   agent:
-#     ca_cert: certs/ca.pem
-#     cert:    certs/agent.pem
-#     key:     certs/agent.key
+# certs_dir is where auto-generated TLS and SSH keys are stored.
+# Default: /etc/flux/certs (Linux/macOS), %PROGRAMDATA%\flux\certs (Windows)
+# certs_dir: /etc/flux/certs
 
 providers:
   aws:
@@ -32,10 +20,6 @@ providers:
     # access_key_id: AKIAIOSFODNN7EXAMPLE
     # secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
-    # SSH access — ssh_keyname is the EC2 key pair injected into nodes at launch.
-    # Anyone with the matching private key (ssh_key_path) can SSH into the node.
-    ssh_keyname: flux-agent-key
-    ssh_key_path: /home/user/.ssh/flux-agent-key.pem
     ssh_user: admin
     agent_version: "0.1.0"   # fetched from GitHub Releases as a .deb
 
@@ -82,9 +66,13 @@ providers:
     zone: us-central1-a
     image: projects/debian-cloud/global/images/family/debian-12
 
+    # Static credentials — optional.
+    # When omitted, Application Default Credentials are used
+    # (GOOGLE_APPLICATION_CREDENTIALS env, gcloud auth, or GCE metadata).
+    # credentials_file: /path/to/service-account.json
+
     # service_account_email: flux-agent@my-project.iam.gserviceaccount.com
 
-    ssh_key_path: /home/user/.ssh/flux-agent-key.pem
     ssh_user: ubuntu
     agent_version: "0.1.0"
 

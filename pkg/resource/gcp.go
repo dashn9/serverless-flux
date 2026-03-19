@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"flux/pkg/config"
+	"flux/pkg/pki"
 
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
@@ -19,14 +21,20 @@ type GCPProvider struct {
 	instances    *compute.InstancesService
 	zoneOps      *compute.ZoneOperationsService
 	bootstrapper *SSHBootstrapper
+	pkiMgr       *pki.PKI
 	seqNum       int
 }
 
 // NewGCPProvider creates a GCP cloud provider with a configured Compute Engine client.
-func NewGCPProvider() (*GCPProvider, error) {
+func NewGCPProvider(pkiMgr *pki.PKI) (*GCPProvider, error) {
 	cfg := config.Get().Providers.GCP
 
-	svc, err := compute.NewService(context.Background(), option.WithScopes(compute.ComputeScope))
+	opts := []option.ClientOption{option.WithScopes(compute.ComputeScope)}
+	if cfg.CredentialsFile != "" {
+		opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile))
+	}
+
+	svc, err := compute.NewService(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GCE service: %w", err)
 	}
@@ -34,18 +42,18 @@ func NewGCPProvider() (*GCPProvider, error) {
 	fluxCfg := config.Get()
 
 	bootstrapper := NewSSHBootstrapper(BootstrapConfig{
-		SSHKeyPath:   cfg.SSHKeyPath,
+		PKI:          pkiMgr,
 		SSHUser:      cfg.SSHUser,
 		AgentPort:    fluxCfg.AgentPort,
 		RedisAddr:    fluxCfg.RedisAddr,
 		AgentVersion: cfg.AgentVersion,
-		AgentGRPC:    fluxCfg.GRPC.Agent,
 	})
 
 	return &GCPProvider{
 		instances:    svc.Instances,
 		zoneOps:      svc.ZoneOperations,
 		bootstrapper: bootstrapper,
+		pkiMgr:       pkiMgr,
 	}, nil
 }
 
@@ -80,6 +88,9 @@ func (g *GCPProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		labels[k] = v
 	}
 
+	// Build the ssh-keys metadata value: "<user>:<public_key>"
+	sshKeyEntry := fmt.Sprintf("%s:%s", cfg.SSHUser, strings.TrimSpace(string(g.pkiMgr.SSHPublicKey())))
+
 	instance := &compute.Instance{
 		Name:        instanceName,
 		MachineType: fmt.Sprintf("zones/%s/machineTypes/%s", cfg.Zone, machineType),
@@ -99,6 +110,11 @@ func (g *GCPProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 			},
 		},
 		Labels: labels,
+		Metadata: &compute.Metadata{
+			Items: []*compute.MetadataItems{
+				{Key: "ssh-keys", Value: &sshKeyEntry},
+			},
+		},
 	}
 
 	if cfg.ServiceAccountEmail != "" {
@@ -138,13 +154,8 @@ func (g *GCPProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 	}, nil
 }
 
-// Bootstrap delegates to the shared SSHBootstrapper. If no SSH key is
-// configured, it is a no-op and provisioning relies on startup-script alone.
+// Bootstrap delegates to the shared SSHBootstrapper.
 func (g *GCPProvider) Bootstrap(ctx context.Context, node *ProvisionedNode) error {
-	if g.bootstrapper == nil {
-		log.Printf("[gcp] No ssh_key_path — skipping SSH bootstrap for %s (startup-script only)", node.AgentID)
-		return nil
-	}
 	return g.bootstrapper.Bootstrap(ctx, node)
 }
 

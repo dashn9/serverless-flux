@@ -1,0 +1,85 @@
+name: Release .deb Package
+
+on:
+  # push:
+  #   tags:
+  #     - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (e.g. 1.0.0)"
+        required: true
+        default: "0.1.0"
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      PKG: flux_${{ inputs.version }}_amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o flux .
+
+      - name: Build .deb package
+        run: |
+          mkdir -p "${PKG}/DEBIAN" "${PKG}/lib/systemd/system"
+
+          install -Dm755 flux              "${PKG}/usr/local/bin/flux"
+          install -Dm644 example.flux.yaml "${PKG}/etc/flux/flux.yaml.example"
+
+          cat > "${PKG}/DEBIAN/control" <<-EOF
+          	Package: flux
+          	Version: ${VERSION}
+          	Architecture: amd64
+          	Maintainer: Daniel Shogbon <ishogbon@gmail.com>
+          	Depends: libc6
+          	Section: utils
+          	Priority: optional
+          	Description: Serverless Fabric control plane
+          	 Control plane for the Serverless Fabric platform. Routes
+          	 requests to agents, manages the agent registry, and
+          	 coordinates autoscaling across AWS and GCP.
+          EOF
+
+          cat > "${PKG}/lib/systemd/system/flux.service" <<-'EOF'
+          	[Unit]
+          	Description=Serverless Fabric Control Plane
+          	Documentation=https://github.com/dashn9/serverless-flux
+          	After=network.target redis.service
+
+          	[Service]
+          	Type=simple
+          	ExecStart=/usr/local/bin/flux
+          	WorkingDirectory=/etc/flux
+          	Restart=on-failure
+          	RestartSec=5s
+
+          	[Install]
+          	WantedBy=multi-user.target
+          EOF
+
+          dpkg-deb --build --root-owner-group "${PKG}"
+
+      - name: Create GitHub Release and upload .deb
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          name: "flux v${{ env.VERSION }}"
+          generate_release_notes: true
+          files: "*.deb"
