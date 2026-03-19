@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"flux/pkg/config"
 	"flux/pkg/models"
 	"flux/pkg/pki"
 	pb "flux/proto"
