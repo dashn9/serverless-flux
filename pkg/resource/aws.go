@@ -58,11 +58,12 @@ func NewAWSProvider(pkiMgr *pki.PKI) (*AWSProvider, error) {
 	fluxCfg := config.Get()
 
 	bootstrapper := NewSSHBootstrapper(BootstrapConfig{
-		PKI:          pkiMgr,
-		SSHUser:      cfg.SSHUser,
-		AgentPort:    fluxCfg.AgentPort,
-		RedisAddr:    fluxCfg.RedisAddr,
-		AgentVersion: cfg.AgentVersion,
+		PKI:                pkiMgr,
+		SSHUser:            cfg.SSHUser,
+		AgentPort:          fluxCfg.AgentPort,
+		RedisAddr:          fluxCfg.RedisAddr,
+		AgentVersion:       cfg.AgentVersion,
+		AgentSetupCommands: cfg.AgentSetupCommands,
 	})
 
 	return &AWSProvider{

@@ -37,6 +37,9 @@ type BootstrapConfig struct {
 
 	// AgentVersion is used to download the .deb from GitHub Releases.
 	AgentVersion string
+
+	// AgentSetupCommands is a list of shell commands to run before agent install.
+	AgentSetupCommands []string
 }
 
 // SSHBootstrapper installs and starts the flux-agent on a remote node over SSH.
@@ -64,6 +67,14 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 		return fmt.Errorf("SSH dial %s: %w", node.PublicIP, err)
 	}
 	defer client.Close()
+
+	// Run setup commands before agent install.
+	for i, cmd := range b.cfg.AgentSetupCommands {
+		log.Printf("[bootstrap] Running setup command %d/%d on %s", i+1, len(b.cfg.AgentSetupCommands), node.PublicIP)
+		if err := b.run(client, cmd); err != nil {
+			return fmt.Errorf("setup command %d: %w", i+1, err)
+		}
+	}
 
 	// Download and install the agent .deb if a version is configured.
 	if b.cfg.AgentVersion != "" {

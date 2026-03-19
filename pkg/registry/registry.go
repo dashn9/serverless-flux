@@ -171,3 +171,27 @@ func (r *Registry) GetFunction(name string) (*models.Function, bool) {
 	}
 	return fn, true
 }
+
+func (r *Registry) GetAllFunctions() []*models.Function {
+	fns, err := r.memory.GetAllFunctions()
+	if err != nil {
+		log.Printf("[registry] Failed to fetch functions: %v", err)
+		return nil
+	}
+	return fns
+}
+
+func (r *Registry) SaveCodeArchive(functionName string, data []byte) {
+	if err := r.memory.SaveCodeArchive(functionName, data); err != nil {
+		log.Printf("[registry] Failed to save code archive for %s: %v", functionName, err)
+	}
+}
+
+func (r *Registry) GetCodeArchive(functionName string) []byte {
+	data, err := r.memory.GetCodeArchive(functionName)
+	if err != nil {
+		log.Printf("[registry] Failed to get code archive for %s: %v", functionName, err)
+		return nil
+	}
+	return data
+}

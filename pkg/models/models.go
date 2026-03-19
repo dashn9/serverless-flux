@@ -42,16 +42,24 @@ const (
 	ConcurrencyBehaviorExit ConcurrencyBehavior = "exit"
 )
 
+type PressureBehavior string
+
+const (
+	PressureBehaviorWait PressureBehavior = "wait"
+	PressureBehaviorExit PressureBehavior = "exit"
+)
+
 type Function struct {
-	Name                   string
-	Handler                string
-	CPUMillicores          int32
-	MemoryMB               int64
-	TimeoutSec             int32
-	MaxConcurrency         int32
-	MaxConcurrencyBehavior ConcurrencyBehavior
-	CodePath               string
-	Env                    map[string]string
+	Name                     string
+	Handler                  string
+	CPUMillicores            int32
+	MemoryMB                 int64
+	TimeoutSec               int32
+	MaxConcurrency           int32
+	MaxConcurrencyBehavior   ConcurrencyBehavior
+	ResourcePressureBehavior PressureBehavior
+	CodePath                 string
+	Env                      map[string]string
 }
 
 // Pressure returns the combined CPU+memory load score (0–200).

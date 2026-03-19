@@ -53,9 +53,10 @@ func main() {
 	}
 	provMgr.Start()
 
-	go startHealthPolling(ctx, reg, agentClient)
-
 	apiServer := api.NewAPIServer(reg, agentClient, provMgr)
+
+	go startHealthPolling(ctx, reg, agentClient, apiServer)
+
 	log.Printf("HTTP API server listening on port %d", httpPort)
 
 	go func() {
@@ -72,7 +73,7 @@ func main() {
 	}
 }
 
-func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient *client.AgentClient) {
+func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient *client.AgentClient, apiServer *api.APIServer) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -83,13 +84,13 @@ func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient
 		case <-ticker.C:
 			agents := reg.GetAllAgents()
 			for _, agent := range agents {
-				go checkAgentHealth(agent, reg, agentClient)
+				go checkAgentHealth(agent, reg, agentClient, apiServer)
 			}
 		}
 	}
 }
 
-func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *client.AgentClient) {
+func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *client.AgentClient, apiServer *api.APIServer) {
 	if err := agentClient.HealthCheck(agent); err != nil {
 		if agent.Status != models.AgentOffline {
 			log.Printf("Agent %s health check failed: %v", agent.ID, err)
@@ -101,6 +102,8 @@ func checkAgentHealth(agent *models.Agent, reg *registry.Registry, agentClient *
 		status, err := agentClient.GetNodeStatus(agent)
 		if err == nil {
 			reg.UpdateNodeStatus(agent.ID, status)
+			// Agent just came online — sync all functions and code.
+			go apiServer.SyncFunctionsToAgent(agent.ID, agent.Address)
 		}
 	}
 }

@@ -9,7 +9,7 @@ Client
   │  HTTP :7227
   ▼
 Flux (control plane)
-  │  gRPC (mTLS optional)
+  │  gRPC (mTLS)
   ├─► Agent #1
   ├─► Agent #2
   └─► Agent #3
@@ -25,7 +25,8 @@ Flux (control plane)
 Download the latest release from [GitHub Releases](https://github.com/dashn9/serverless-flux/releases):
 
 ```bash
-sudo dpkg -i flux_*.deb
+wget https://github.com/dashn9/serverless-flux/releases/download/v0.1.0/flux_0.1.0_amd64.deb
+sudo dpkg -i flux_0.1.0_amd64.deb
 ```
 
 The package installs a systemd service and places an example config at `/etc/flux/flux.yaml.example`.
@@ -40,17 +41,16 @@ api_key: your-secret-key
 redis_addr: localhost:6379
 agent_port: 50052
 
-grpc:
-  insecure: true          # set false + provide certs for production
-
 providers:
   aws:
     region: us-east-1
     ami: ami-...
-    ssh_keyname: my-key
     security_group_id: sg-...
-    ssh_key_path: ~/.ssh/key.pem
     agent_version: "0.1.0"   # installs .deb from GitHub Releases
+
+    agent_setup_commands:    # run on each new node before agent install
+      - sudo apt-get update
+      - sudo apt-get install -y curl
 
     autoscaling:
       enabled: true
@@ -69,35 +69,55 @@ providers:
       cooldown_sec: 300
 ```
 
-### mTLS (production)
+### Auto-generated PKI
 
-```yaml
-grpc:
-  insecure: false
-  ca_cert: certs/ca.pem
-  cert:    certs/flux.pem
-  key:     certs/flux.key
-  agent:                    # uploaded to each node during SSH bootstrap
-    ca_cert: certs/ca.pem
-    cert:    certs/agent.pem
-    key:     certs/agent.key
+Flux automatically generates and manages all TLS and SSH keys on first startup. No manual certificate or key management is required.
+
+Generated material is stored under `certs_dir` (configurable):
+
+```
+<certs_dir>/
+  ca/
+    ca.pem            # CA certificate
+    ca-key.pem        # CA private key (never leaves Flux host)
+  flux/
+    flux.pem          # Flux client certificate
+    flux-key.pem      # Flux private key
+  ssh/
+    flux-agent.pem    # SSH private key (shared across all agents)
+    flux-agent.pub    # SSH public key (auto-imported to cloud providers)
+  agents/
+    <agent-id>/
+      agent.pem       # Per-agent server certificate (minted at provision time)
+      agent-key.pem   # Per-agent private key
 ```
 
-Generate certs:
-```bash
-# CA
-openssl genrsa -out certs/ca.key 4096
-openssl req -new -x509 -days 3650 -key certs/ca.key -out certs/ca.pem -subj "/CN=flux-ca"
+Default location:
+- **Linux/macOS**: `/etc/flux/certs`
+- **Windows**: `%PROGRAMDATA%\flux\certs`
 
-# Flux cert
-openssl genrsa -out certs/flux.key 2048
-openssl req -new -key certs/flux.key -out flux.csr -subj "/CN=flux"
-openssl x509 -req -in flux.csr -CA certs/ca.pem -CAkey certs/ca.key -CAcreateserial -out certs/flux.pem -days 365
+Override with:
+```yaml
+certs_dir: /custom/path/to/certs
+```
 
-# Agent cert (CN must be "flux-agent")
-openssl genrsa -out certs/agent.key 2048
-openssl req -new -key certs/agent.key -out agent.csr -subj "/CN=flux-agent"
-openssl x509 -req -in agent.csr -CA certs/ca.pem -CAkey certs/ca.key -CAcreateserial -out certs/agent.pem -days 365
+On each node provision, Flux mints a unique agent TLS certificate signed by its CA and uploads it during SSH bootstrap. The SSH key pair is auto-imported as an EC2 key pair on AWS, and injected via instance metadata on GCP.
+
+### Cloud Credentials
+
+**AWS** — uses the standard credential chain by default (env vars, `~/.aws/credentials`, instance profile). Optional static credentials:
+```yaml
+providers:
+  aws:
+    access_key_id: AKIA...
+    secret_access_key: wJal...
+```
+
+**GCP** — uses Application Default Credentials by default (`GOOGLE_APPLICATION_CREDENTIALS` env, `gcloud auth`, or GCE metadata). Optional service account key file:
+```yaml
+providers:
+  gcp:
+    credentials_file: /path/to/service-account.json
 ```
 
 ## Quick Start
@@ -144,7 +164,8 @@ resources:
   memory: 128     # MB
 timeout: 30       # seconds
 max_concurrency: 5
-max_concurrency_behavior: exit   # or "wait"
+max_concurrency_behavior: exit        # or "wait" — when agent hits concurrency limit
+resource_pressure_behavior: exit      # or "wait" — when no agent has enough CPU/memory
 env:
   FOO: bar
 ```
@@ -158,7 +179,10 @@ curl -X POST http://localhost:7227/execute/hello-world \
   -d '{"args": ["arg1"]}'
 ```
 
-Returns `429` when no agent has sufficient resources to fit the function. If an agent is at its concurrency limit, the behaviour depends on `max_concurrency_behavior`: `exit` returns `503` immediately, `wait` retries until capacity frees up.
+Response behaviour when agents are constrained:
+
+- **Resource pressure** (no agent has enough CPU/memory): controlled by `resource_pressure_behavior` — `exit` returns `429` immediately, `wait` retries until an agent frees up.
+- **Concurrency limit** (agent at max concurrent executions): controlled by `max_concurrency_behavior` — `exit` returns `503` immediately, `wait` retries on another agent.
 
 ## Autoscaling
 
@@ -174,9 +198,16 @@ The autoscaler runs autonomously — it is started by `ProvidersManager` and hol
 
 1. `POST /initialize` spawns `min_nodes - current` nodes concurrently per provider.
 2. Each spawn: `CloudProvider.SpawnNode` (EC2 RunInstances / GCP Insert) → waits for IPs → `RegisterOfflineAgent`.
-3. If `ssh_key_path` is set: SSH bootstrap uploads `agent.yaml` + TLS certs → restarts `flux-agent` service.
-4. If only `agent_version` is set: user-data script downloads the `.deb` from GitHub Releases, writes `agent.yaml`, starts service.
-5. Autoscaler probes offline agents on every poll tick; first successful contact promotes them to online.
+3. SSH bootstrap connects using the auto-generated SSH key, then:
+   1. Runs `agent_setup_commands` (if configured) — package installs, OS updates, etc.
+   2. Downloads and installs the flux-agent `.deb`.
+   3. Mints a per-agent TLS cert and uploads it alongside `agent.yaml`.
+   4. Starts the `flux-agent` systemd service.
+4. Autoscaler probes offline agents on every poll tick; first successful contact promotes them to online and syncs all registered functions and deployed code.
+
+## Agent Node Monitoring
+
+Flux collects node-level metrics (CPU, memory, active tasks, uptime) from agents via the `ReportNodeStatus` gRPC call. These metrics drive autoscaling decisions and are surfaced through the `GET /resources` endpoint.
 
 ## Agent Self-Registration
 

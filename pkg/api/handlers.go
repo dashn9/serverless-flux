@@ -37,13 +37,14 @@ type APIServer struct {
 }
 
 type FunctionYAML struct {
-	Name                   string            `yaml:"name"`
-	Handler                string            `yaml:"handler"`
-	Resources              ResourceLimits    `yaml:"resources"`
-	Timeout                int32             `yaml:"timeout"`
-	MaxConcurrency         int32             `yaml:"max_concurrency,omitempty"`
-	MaxConcurrencyBehavior string            `yaml:"max_concurrency_behavior,omitempty"`
-	Env                    map[string]string `yaml:"env,omitempty"`
+	Name                     string            `yaml:"name"`
+	Handler                  string            `yaml:"handler"`
+	Resources                ResourceLimits    `yaml:"resources"`
+	Timeout                  int32             `yaml:"timeout"`
+	MaxConcurrency           int32             `yaml:"max_concurrency,omitempty"`
+	MaxConcurrencyBehavior   string            `yaml:"max_concurrency_behavior,omitempty"`
+	ResourcePressureBehavior string            `yaml:"resource_pressure_behavior,omitempty"`
+	Env                      map[string]string `yaml:"env,omitempty"`
 }
 
 type ResourceLimits struct {
@@ -313,6 +314,9 @@ func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 	s.registry.RegisterAgent(req.ID, req.Address, req.NodeId, "", "")
 	log.Printf("[api] Node registered: id=%s address=%s node_id=%s", req.ID, req.Address, req.NodeId)
 
+	// Sync all registered functions and deployed code to the new agent.
+	go s.syncFunctionsToAgent(req.ID, req.Address)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -359,15 +363,26 @@ func (s *APIServer) handleRegisterFunction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	pressureBehavior := models.PressureBehavior(funcConfig.ResourcePressureBehavior)
+	if pressureBehavior == "" {
+		pressureBehavior = models.PressureBehaviorExit
+	}
+
+	if pressureBehavior != models.PressureBehaviorWait && pressureBehavior != models.PressureBehaviorExit {
+		http.Error(w, "resource_pressure_behavior must be 'wait' or 'exit'", http.StatusBadRequest)
+		return
+	}
+
 	function := &models.Function{
-		Name:                   funcConfig.Name,
-		Handler:                funcConfig.Handler,
-		CPUMillicores:          funcConfig.Resources.CPU,
-		MemoryMB:               funcConfig.Resources.Memory,
-		TimeoutSec:             funcConfig.Timeout,
-		MaxConcurrency:         maxConcurrency,
-		MaxConcurrencyBehavior: maxConcurrencyBehavior,
-		Env:                    funcConfig.Env,
+		Name:                     funcConfig.Name,
+		Handler:                  funcConfig.Handler,
+		CPUMillicores:            funcConfig.Resources.CPU,
+		MemoryMB:                 funcConfig.Resources.Memory,
+		TimeoutSec:               funcConfig.Timeout,
+		MaxConcurrency:           maxConcurrency,
+		MaxConcurrencyBehavior:   maxConcurrencyBehavior,
+		ResourcePressureBehavior: pressureBehavior,
+		Env:                      funcConfig.Env,
 	}
 	s.registry.RegisterFunction(function)
 
@@ -424,6 +439,9 @@ func (s *APIServer) handleDeploy(w http.ResponseWriter, r *http.Request, functio
 		http.Error(w, "empty zip file", http.StatusBadRequest)
 		return
 	}
+
+	// Persist the code archive so new agents can receive it on join.
+	s.registry.SaveCodeArchive(functionName, zipData)
 
 	agents := s.registry.GetAvailableAgents()
 	if len(agents) == 0 {
@@ -490,8 +508,17 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		}
 
 		if best == nil {
-			http.Error(w, "no agents available with sufficient resources", http.StatusTooManyRequests)
-			return
+			if fn.ResourcePressureBehavior == models.PressureBehaviorExit {
+				http.Error(w, "no agents available with sufficient resources", http.StatusTooManyRequests)
+				return
+			}
+			log.Printf("[execute] %s — no agents with sufficient resources, retrying...", functionName)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
 		}
 
 		log.Printf("[execute] %s → agent=%s (score=%.0f)", functionName, best.ID, best.AvailableScore())
@@ -624,4 +651,43 @@ func (s *APIServer) handleResources(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// syncFunctionsToAgent pushes all registered functions and their deployed code
+// to a single agent. Called asynchronously when a new agent joins.
+func (s *APIServer) syncFunctionsToAgent(agentID, address string) {
+	agent, ok := s.registry.GetAgent(agentID)
+	if !ok {
+		return
+	}
+
+	functions := s.registry.GetAllFunctions()
+	if len(functions) == 0 {
+		return
+	}
+
+	for _, fn := range functions {
+		if err := s.agentClient.RegisterFunction(agent, fn); err != nil {
+			log.Printf("[sync] Failed to register function %s on agent %s: %v", fn.Name, agentID, err)
+			continue
+		}
+
+		code := s.registry.GetCodeArchive(fn.Name)
+		if code == nil {
+			continue
+		}
+
+		if err := s.agentClient.DeployFunction(agent, fn.Name, code); err != nil {
+			log.Printf("[sync] Failed to deploy %s to agent %s: %v", fn.Name, agentID, err)
+			continue
+		}
+
+		log.Printf("[sync] Synced function %s to agent %s", fn.Name, agentID)
+	}
+}
+
+// SyncFunctionsToAgent is the exported version for use by the health poller
+// when an offline agent comes back online.
+func (s *APIServer) SyncFunctionsToAgent(agentID, address string) {
+	s.syncFunctionsToAgent(agentID, address)
 }

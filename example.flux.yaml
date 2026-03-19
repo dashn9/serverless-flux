@@ -27,6 +27,11 @@ providers:
       Environment: production
       Team: platform
 
+    # Shell commands to run on each new node before the agent is installed.
+    # agent_setup_commands:
+    #   - sudo apt-get update
+    #   - sudo apt-get install -y curl
+
     autoscaling:
       enabled: true
       name: aws-prod
@@ -63,8 +68,8 @@ providers:
 
   gcp:
     project_id: my-project
-    zone: us-central1-a
-    image: projects/debian-cloud/global/images/family/debian-12
+    zone: us-east5-a
+    image: projects/debian-cloud/global/images/debian-12-bookworm-v20260310
 
     # Static credentials — optional.
     # When omitted, Application Default Credentials are used
@@ -79,6 +84,11 @@ providers:
     labels:
       environment: production
       team: platform
+
+    # Shell commands to run on each new node before the agent is installed.
+    # agent_setup_commands:
+    #   - sudo apt-get update
+    #   - sudo apt-get install -y curl
 
     autoscaling:
       enabled: true

@@ -88,6 +88,24 @@ func (r *RedisMemory) GetAllFunctions() ([]*models.Function, error) {
 	return functions, nil
 }
 
+// Code archive operations
+func (r *RedisMemory) SaveCodeArchive(functionName string, data []byte) error {
+	key := fmt.Sprintf("code:%s", functionName)
+	return r.client.Set(r.ctx, key, data, 0).Err()
+}
+
+func (r *RedisMemory) GetCodeArchive(functionName string) ([]byte, error) {
+	key := fmt.Sprintf("code:%s", functionName)
+	data, err := r.client.Get(r.ctx, key).Bytes()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
 // Agent operations
 func (r *RedisMemory) SaveAgent(agent *models.Agent) error {
 	data, err := json.Marshal(agent)

@@ -43,6 +43,10 @@ type AWSProviderConfig struct {
 
 	Tags map[string]string `yaml:"tags,omitempty"`
 
+	// AgentSetupCommands is a list of shell commands to run on newly provisioned
+	// nodes before the agent is installed and started.
+	AgentSetupCommands []string `yaml:"agent_setup_commands,omitempty"`
+
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
 }
 
@@ -66,6 +70,10 @@ type GCPProviderConfig struct {
 
 	AgentVersion string            `yaml:"agent_version,omitempty"`
 	Labels       map[string]string `yaml:"labels,omitempty"`
+
+	// AgentSetupCommands is a list of shell commands to run on newly provisioned
+	// nodes before the agent is installed and started.
+	AgentSetupCommands []string `yaml:"agent_setup_commands,omitempty"`
 
 	Autoscaling *AutoscaleConfig `yaml:"autoscaling,omitempty"`
 }

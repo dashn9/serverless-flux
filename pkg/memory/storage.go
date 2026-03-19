@@ -9,6 +9,10 @@ type Memory interface {
 	GetFunction(name string) (*models.Function, error)
 	GetAllFunctions() ([]*models.Function, error)
 
+	// Code archive operations
+	SaveCodeArchive(functionName string, data []byte) error
+	GetCodeArchive(functionName string) ([]byte, error)
+
 	// Agent operations
 	SaveAgent(agent *models.Agent) error
 	GetAgent(id string) (*models.Agent, error)
