@@ -66,22 +66,24 @@ func (r *RedisMemory) GetFunction(name string) (*models.Function, error) {
 
 func (r *RedisMemory) GetAllFunctions() ([]*models.Function, error) {
 	keys, err := r.client.Keys(r.ctx, "function:*").Result()
+	if err != nil || len(keys) == 0 {
+		return nil, err
+	}
+
+	values, err := r.client.MGet(r.ctx, keys...).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	functions := make([]*models.Function, 0, len(keys))
-	for _, key := range keys {
-		data, err := r.client.Get(r.ctx, key).Bytes()
-		if err != nil {
+	functions := make([]*models.Function, 0, len(values))
+	for _, v := range values {
+		if v == nil {
 			continue
 		}
-
 		var function models.Function
-		if err := json.Unmarshal(data, &function); err != nil {
+		if err := json.Unmarshal([]byte(v.(string)), &function); err != nil {
 			continue
 		}
-
 		functions = append(functions, &function)
 	}
 
@@ -141,22 +143,24 @@ func (r *RedisMemory) DeleteAgent(id string) error {
 
 func (r *RedisMemory) GetAllAgents() ([]*models.Agent, error) {
 	keys, err := r.client.Keys(r.ctx, "flux:agents:*").Result()
+	if err != nil || len(keys) == 0 {
+		return nil, err
+	}
+
+	values, err := r.client.MGet(r.ctx, keys...).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	agents := make([]*models.Agent, 0, len(keys))
-	for _, key := range keys {
-		data, err := r.client.Get(r.ctx, key).Bytes()
-		if err != nil {
+	agents := make([]*models.Agent, 0, len(values))
+	for _, v := range values {
+		if v == nil {
 			continue
 		}
-
 		var agent models.Agent
-		if err := json.Unmarshal(data, &agent); err != nil {
+		if err := json.Unmarshal([]byte(v.(string)), &agent); err != nil {
 			continue
 		}
-
 		agents = append(agents, &agent)
 	}
 

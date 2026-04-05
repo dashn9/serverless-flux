@@ -140,7 +140,7 @@ func (c *AgentClient) DeployFunction(agent *models.Agent, functionName string, z
 	return nil
 }
 
-func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, args []string) (*pb.ExecutionResponse, error) {
+func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, args []string, executionID string) (*pb.ExecutionResponse, error) {
 	cl, err := c.get(agent.Address)
 	if err != nil {
 		return nil, err
@@ -152,6 +152,7 @@ func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, 
 	return cl.ExecuteFunction(ctx, &pb.ExecutionRequest{
 		FunctionName: functionName,
 		Args:         args,
+		ExecutionId:  executionID,
 	})
 }
 

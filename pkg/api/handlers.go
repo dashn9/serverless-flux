@@ -13,6 +13,7 @@ import (
 	"flux/pkg/models"
 	"flux/pkg/registry"
 
+	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
@@ -57,11 +58,12 @@ type ExecuteRequest struct {
 }
 
 type ExecuteResponse struct {
-	Status     string `json:"status"`
-	Output     string `json:"output,omitempty"`
-	Error      string `json:"error,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
-	AgentID    string `json:"agent_id"`
+	Status      string `json:"status"`
+	Output      string `json:"output,omitempty"`
+	Error       string `json:"error,omitempty"`
+	DurationMs  int64  `json:"duration_ms"`
+	AgentID     string `json:"agent_id"`
+	ExecutionID string `json:"execution_id"`
 }
 
 type AgentInfo struct {
@@ -183,6 +185,17 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		functionName := strings.TrimPrefix(r.URL.Path, "/deploy/")
 		s.handleDeploy(w, r, functionName)
+		return
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/execute/") && strings.HasSuffix(r.URL.Path, "/async") && r.Method == "POST" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		functionName := strings.TrimPrefix(r.URL.Path, "/execute/")
+		functionName = strings.TrimSuffix(functionName, "/async")
+		s.handleAsyncExecute(w, r, functionName)
 		return
 	}
 
@@ -495,6 +508,8 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		return
 	}
 
+	executionID := "exc-" + uuid.New().String()
+
 	for {
 		// Pick the available agent with the most headroom that can fit the function.
 		var best *models.Agent
@@ -521,10 +536,10 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 			continue
 		}
 
-		log.Printf("[execute] %s → agent=%s (score=%.0f)", functionName, best.ID, best.AvailableScore())
+		log.Printf("[execute] %s → agent=%s (score=%.0f) execution_id=%s", functionName, best.ID, best.AvailableScore(), executionID)
 
 		start := time.Now()
-		result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args)
+		result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args, executionID)
 		elapsed := time.Since(start).Milliseconds()
 		if err != nil {
 			log.Printf("[execute] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
@@ -552,11 +567,12 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(statusCode)
 			json.NewEncoder(w).Encode(ExecuteResponse{
-				Status:     status,
-				Output:     string(result.Output),
-				Error:      result.Error,
-				DurationMs: result.DurationMs,
-				AgentID:    best.ID,
+				Status:      status,
+				Output:      string(result.Output),
+				Error:       result.Error,
+				DurationMs:  result.DurationMs,
+				AgentID:     best.ID,
+				ExecutionID: executionID,
 			})
 			return
 		}
@@ -690,4 +706,73 @@ func (s *APIServer) syncFunctionsToAgent(agentID, address string) {
 // when an offline agent comes back online.
 func (s *APIServer) SyncFunctionsToAgent(agentID, address string) {
 	s.syncFunctionsToAgent(agentID, address)
+}
+
+func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, functionName string) {
+	var req ExecuteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	fn, exists := s.registry.GetFunction(functionName)
+	if !exists {
+		http.Error(w, "function not found", http.StatusNotFound)
+		return
+	}
+
+	executionID := "exc-" + uuid.New().String()
+
+	go func() {
+		for {
+			var best *models.Agent
+			for _, a := range s.registry.GetAvailableAgents() {
+				if !a.CanFit(fn) {
+					continue
+				}
+				if best == nil || a.AvailableScore() > best.AvailableScore() {
+					best = a
+				}
+			}
+
+			if best == nil {
+				if fn.ResourcePressureBehavior == models.PressureBehaviorExit {
+					log.Printf("[async] %s — no agents with sufficient resources, aborting execution_id=%s", functionName, executionID)
+					return
+				}
+				log.Printf("[async] %s — no agents with sufficient resources, retrying...", functionName)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
+			start := time.Now()
+			result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args, executionID)
+			elapsed := time.Since(start).Milliseconds()
+			if err != nil {
+				log.Printf("[async] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
+				return
+			}
+
+			if result.Error != "" && strings.Contains(result.Error, "at capacity") {
+				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
+					log.Printf("[async] %s at capacity on agent=%s, aborting", functionName, best.ID)
+					return
+				}
+				log.Printf("[async] %s at capacity on agent=%s, retrying...", functionName, best.ID)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
+			if result.Error != "" {
+				log.Printf("[async] %s failed on agent=%s in %dms: %s", functionName, best.ID, elapsed, result.Error)
+			} else {
+				log.Printf("[async] %s completed on agent=%s in %dms", functionName, best.ID, elapsed)
+			}
+			return
+		}
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }

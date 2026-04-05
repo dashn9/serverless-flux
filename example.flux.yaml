@@ -69,7 +69,7 @@ providers:
   gcp:
     project_id: my-project
     zone: us-east5-a
-    image: projects/debian-cloud/global/images/debian-12-bookworm-v20260310
+    image: projects/debian-cloud/global/images/debian-13-trixie-v20260310
 
     # Static credentials — optional.
     # When omitted, Application Default Credentials are used
