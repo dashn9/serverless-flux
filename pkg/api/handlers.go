@@ -847,6 +847,14 @@ func (s *APIServer) handleExecutionLogs(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "execution not found", http.StatusNotFound)
 		return
 	}
+
+	logs, err := s.registry.GetExecutionLogs(executionID)
+	if err != nil {
+		http.Error(w, "failed to retrieve logs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	record.Output = logs
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(record)
 }

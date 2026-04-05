@@ -22,6 +22,7 @@ type Memory interface {
 	// Execution log operations
 	SaveExecution(record *models.ExecutionRecord) error
 	GetExecution(executionID string) (*models.ExecutionRecord, error)
+	GetExecutionLogs(executionID string) (string, error)
 
 	// Close the storage connection
 	Close() error

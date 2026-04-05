@@ -205,3 +205,7 @@ func (r *Registry) SaveExecution(record *models.ExecutionRecord) {
 func (r *Registry) GetExecution(executionID string) (*models.ExecutionRecord, error) {
 	return r.memory.GetExecution(executionID)
 }
+
+func (r *Registry) GetExecutionLogs(executionID string) (string, error) {
+	return r.memory.GetExecutionLogs(executionID)
+}

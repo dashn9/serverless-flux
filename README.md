@@ -164,7 +164,7 @@ handler: main
 resources:
   cpu: 100        # millicores
   memory: 128     # MB
-timeout: 30       # seconds
+timeout: 30       # seconds — omit or set to 0 for no timeout
 max_concurrency: 5
 max_concurrency_behavior: exit        # or "wait" — when agent hits concurrency limit
 resource_pressure_behavior: exit      # or "wait" — when no agent has enough CPU/memory
@@ -212,15 +212,15 @@ curl http://localhost:7227/executions/exc-550e8400-.../logs \
 
 While running:
 ```json
-{"execution_id": "exc-...", "function_name": "hello-world", "status": "running", "started_at": "..."}
+{"execution_id": "exc-...", "function_name": "hello-world", "status": "running", "output": "partial output so far...", "started_at": "..."}
 ```
 
 Once complete:
 ```json
-{"execution_id": "exc-...", "function_name": "hello-world", "status": "success", "output": "...", "duration_ms": 42, "started_at": "...", "status_at": "..."}
+{"execution_id": "exc-...", "function_name": "hello-world", "status": "success", "output": "full output", "duration_ms": 42, "started_at": "...", "status_at": "..."}
 ```
 
-Execution records expire after **1 hour**.
+The `output` field is updated live as the function writes to stdout/stderr — poll repeatedly to stream progress. Execution records expire after **1 hour**.
 
 ## Autoscaling
 

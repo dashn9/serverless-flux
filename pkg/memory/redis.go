@@ -165,6 +165,17 @@ func (r *RedisMemory) GetExecution(executionID string) (*models.ExecutionRecord,
 	return &record, nil
 }
 
+func (r *RedisMemory) GetExecutionLogs(executionID string) (string, error) {
+	data, err := r.client.Get(r.ctx, fmt.Sprintf("flux:exec-logs:%s", executionID)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return "", nil
+		}
+		return "", err
+	}
+	return data, nil
+}
+
 func (r *RedisMemory) GetAllAgents() ([]*models.Agent, error) {
 	keys, err := r.client.Keys(r.ctx, "flux:agents:*").Result()
 	if err != nil || len(keys) == 0 {
