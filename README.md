@@ -150,7 +150,9 @@ All protected endpoints require an `X-API-Key` header (or `Authorization: Bearer
 | `POST` | `/nodes/register` | Self-register an agent (called by agent on boot) |
 | `PUT` | `/functions` | Register a function (YAML body) |
 | `PUT` | `/deploy/{name}` | Deploy function code (zip body) |
-| `POST` | `/execute/{name}` | Execute a function |
+| `POST` | `/execute/{name}` | Execute a function (synchronous) |
+| `POST` | `/execute/{name}/async` | Execute a function (fire-and-forget) |
+| `GET` | `/executions/{id}/logs` | Poll logs for an async execution |
 | `DELETE` | `/nodes` | Terminate and deregister all managed nodes |
 | `GET` | `/resources` | Flux and agent CPU/memory/uptime stats |
 
@@ -183,6 +185,42 @@ Response behaviour when agents are constrained:
 
 - **Resource pressure** (no agent has enough CPU/memory): controlled by `resource_pressure_behavior` — `exit` returns `429` immediately, `wait` retries until an agent frees up.
 - **Concurrency limit** (agent at max concurrent executions): controlled by `max_concurrency_behavior` — `exit` returns `503` immediately, `wait` retries on another agent.
+
+Every execution response includes an `execution_id` (e.g. `exc-550e8400-...`) which is also injected into the function process as the `FLUX_EXECUTION_ID` environment variable.
+
+### Async Execute
+
+Fire-and-forget execution — returns immediately with an execution ID.
+
+```bash
+curl -X POST http://localhost:7227/execute/hello-world/async \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"args": ["arg1"]}'
+```
+
+```json
+{"status": "accepted", "execution_id": "exc-550e8400-..."}
+```
+
+### Poll Execution Logs
+
+```bash
+curl http://localhost:7227/executions/exc-550e8400-.../logs \
+  -H "X-API-Key: your-secret-key"
+```
+
+While running:
+```json
+{"execution_id": "exc-...", "function_name": "hello-world", "status": "running", "started_at": "..."}
+```
+
+Once complete:
+```json
+{"execution_id": "exc-...", "function_name": "hello-world", "status": "success", "output": "...", "duration_ms": 42, "started_at": "...", "status_at": "..."}
+```
+
+Execution records expire after **1 hour**.
 
 ## Autoscaling
 

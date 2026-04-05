@@ -188,6 +188,17 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(r.URL.Path, "/executions/") && strings.HasSuffix(r.URL.Path, "/logs") && r.Method == "GET" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		executionID := strings.TrimPrefix(r.URL.Path, "/executions/")
+		executionID = strings.TrimSuffix(executionID, "/logs")
+		s.handleExecutionLogs(w, r, executionID)
+		return
+	}
+
 	if strings.HasPrefix(r.URL.Path, "/execute/") && strings.HasSuffix(r.URL.Path, "/async") && r.Method == "POST" {
 		if !s.authenticate(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -722,6 +733,14 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 	}
 
 	executionID := "exc-" + uuid.New().String()
+	now := time.Now()
+
+	s.registry.SaveExecution(&models.ExecutionRecord{
+		ExecutionID:  executionID,
+		FunctionName: functionName,
+		Status:       models.ExecutionStatusRunning,
+		StartedAt:    now,
+	})
 
 	go func() {
 		for {
@@ -738,6 +757,15 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 			if best == nil {
 				if fn.ResourcePressureBehavior == models.PressureBehaviorExit {
 					log.Printf("[async] %s — no agents with sufficient resources, aborting execution_id=%s", functionName, executionID)
+					statusAt := time.Now()
+					s.registry.SaveExecution(&models.ExecutionRecord{
+						ExecutionID:  executionID,
+						FunctionName: functionName,
+						Status:       models.ExecutionStatusFailed,
+						Error:        "no agents with sufficient resources",
+						StartedAt:    now,
+						StatusAt:     &statusAt,
+					})
 					return
 				}
 				log.Printf("[async] %s — no agents with sufficient resources, retrying...", functionName)
@@ -750,12 +778,31 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 			elapsed := time.Since(start).Milliseconds()
 			if err != nil {
 				log.Printf("[async] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
+				statusAt := time.Now()
+				s.registry.SaveExecution(&models.ExecutionRecord{
+					ExecutionID:  executionID,
+					FunctionName: functionName,
+					Status:       models.ExecutionStatusFailed,
+					Error:        err.Error(),
+					DurationMs:   elapsed,
+					StartedAt:    now,
+					StatusAt:     &statusAt,
+				})
 				return
 			}
 
 			if result.Error != "" && strings.Contains(result.Error, "at capacity") {
 				if fn.MaxConcurrencyBehavior == models.ConcurrencyBehaviorExit {
 					log.Printf("[async] %s at capacity on agent=%s, aborting", functionName, best.ID)
+					statusAt := time.Now()
+					s.registry.SaveExecution(&models.ExecutionRecord{
+						ExecutionID:  executionID,
+						FunctionName: functionName,
+						Status:       models.ExecutionStatusFailed,
+						Error:        result.Error,
+						StartedAt:    now,
+						StatusAt:     &statusAt,
+					})
 					return
 				}
 				log.Printf("[async] %s at capacity on agent=%s, retrying...", functionName, best.ID)
@@ -763,11 +810,24 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 				continue
 			}
 
+			statusAt := time.Now()
+			status := models.ExecutionStatusSuccess
 			if result.Error != "" {
+				status = models.ExecutionStatusFailed
 				log.Printf("[async] %s failed on agent=%s in %dms: %s", functionName, best.ID, elapsed, result.Error)
 			} else {
 				log.Printf("[async] %s completed on agent=%s in %dms", functionName, best.ID, elapsed)
 			}
+			s.registry.SaveExecution(&models.ExecutionRecord{
+				ExecutionID:  executionID,
+				FunctionName: functionName,
+				Status:       status,
+				Output:       string(result.Output),
+				Error:        result.Error,
+				DurationMs:   elapsed,
+				StartedAt:    now,
+				StatusAt:     &statusAt,
+			})
 			return
 		}
 	}()
@@ -775,4 +835,18 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "execution_id": executionID})
+}
+
+func (s *APIServer) handleExecutionLogs(w http.ResponseWriter, r *http.Request, executionID string) {
+	record, err := s.registry.GetExecution(executionID)
+	if err != nil {
+		http.Error(w, "failed to retrieve execution: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if record == nil {
+		http.Error(w, "execution not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(record)
 }

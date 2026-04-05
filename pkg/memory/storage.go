@@ -19,6 +19,10 @@ type Memory interface {
 	GetAllAgents() ([]*models.Agent, error)
 	DeleteAgent(id string) error
 
+	// Execution log operations
+	SaveExecution(record *models.ExecutionRecord) error
+	GetExecution(executionID string) (*models.ExecutionRecord, error)
+
 	// Close the storage connection
 	Close() error
 }

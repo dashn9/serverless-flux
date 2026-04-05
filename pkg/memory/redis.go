@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"flux/pkg/config"
 	"flux/pkg/models"
@@ -139,6 +140,29 @@ func (r *RedisMemory) GetAgent(id string) (*models.Agent, error) {
 
 func (r *RedisMemory) DeleteAgent(id string) error {
 	return r.client.Del(r.ctx, fmt.Sprintf("flux:agents:%s", id)).Err()
+}
+
+func (r *RedisMemory) SaveExecution(record *models.ExecutionRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return r.client.Set(r.ctx, fmt.Sprintf("flux:exec:%s", record.ExecutionID), data, time.Hour).Err()
+}
+
+func (r *RedisMemory) GetExecution(executionID string) (*models.ExecutionRecord, error) {
+	data, err := r.client.Get(r.ctx, fmt.Sprintf("flux:exec:%s", executionID)).Bytes()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var record models.ExecutionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
 
 func (r *RedisMemory) GetAllAgents() ([]*models.Agent, error) {

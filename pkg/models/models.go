@@ -104,6 +104,25 @@ func (a *Agent) AvailableScore() float64 {
 	return cpuAvail + memAvail
 }
 
+type ExecutionStatus string
+
+const (
+	ExecutionStatusRunning ExecutionStatus = "running"
+	ExecutionStatusSuccess ExecutionStatus = "success"
+	ExecutionStatusFailed  ExecutionStatus = "failed"
+)
+
+type ExecutionRecord struct {
+	ExecutionID  string          `json:"execution_id"`
+	FunctionName string          `json:"function_name"`
+	Status       ExecutionStatus `json:"status"`
+	Output       string          `json:"output,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	DurationMs   int64           `json:"duration_ms,omitempty"`
+	StartedAt    time.Time       `json:"started_at"`
+	StatusAt     *time.Time      `json:"status_at,omitempty"`
+}
+
 // NodeStatus holds the latest resource metrics reported by an agent node.
 type NodeStatus struct {
 	AgentID     string
