@@ -140,14 +140,11 @@ func (c *AgentClient) DeployFunction(agent *models.Agent, functionName string, z
 	return nil
 }
 
-func (c *AgentClient) ExecuteFunction(agent *models.Agent, functionName string, args []string, executionID string) (*pb.ExecutionResponse, error) {
+func (c *AgentClient) ExecuteFunction(ctx context.Context, agent *models.Agent, functionName string, args []string, executionID string) (*pb.ExecutionResponse, error) {
 	cl, err := c.get(agent.Address)
 	if err != nil {
 		return nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
 
 	return cl.ExecuteFunction(ctx, &pb.ExecutionRequest{
 		FunctionName: functionName,

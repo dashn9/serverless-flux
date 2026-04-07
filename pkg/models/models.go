@@ -107,9 +107,10 @@ func (a *Agent) AvailableScore() float64 {
 type ExecutionStatus string
 
 const (
-	ExecutionStatusRunning ExecutionStatus = "running"
-	ExecutionStatusSuccess ExecutionStatus = "success"
-	ExecutionStatusFailed  ExecutionStatus = "failed"
+	ExecutionStatusRunning   ExecutionStatus = "running"
+	ExecutionStatusSuccess   ExecutionStatus = "success"
+	ExecutionStatusFailed    ExecutionStatus = "failed"
+	ExecutionStatusCancelled ExecutionStatus = "cancelled"
 )
 
 type ExecutionRecord struct {

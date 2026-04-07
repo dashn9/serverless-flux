@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"flux/pkg/client"
@@ -35,6 +37,9 @@ type APIServer struct {
 	registry    *registry.Registry
 	agentClient *client.AgentClient
 	initializer Initializer
+
+	cancelMu sync.Mutex
+	cancels  map[string]context.CancelFunc
 }
 
 type FunctionYAML struct {
@@ -133,6 +138,7 @@ func NewAPIServer(registry *registry.Registry, agentClient *client.AgentClient, 
 		registry:    registry,
 		agentClient: agentClient,
 		initializer: initializer,
+		cancels:     make(map[string]context.CancelFunc),
 	}
 }
 
@@ -196,6 +202,16 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		executionID := strings.TrimPrefix(r.URL.Path, "/executions/")
 		executionID = strings.TrimSuffix(executionID, "/logs")
 		s.handleExecutionLogs(w, r, executionID)
+		return
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/executions/") && r.Method == "DELETE" {
+		if !s.authenticate(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		executionID := strings.TrimPrefix(r.URL.Path, "/executions/")
+		s.handleCancelExecution(w, r, executionID)
 		return
 	}
 
@@ -550,7 +566,7 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 		log.Printf("[execute] %s → agent=%s (score=%.0f) execution_id=%s", functionName, best.ID, best.AvailableScore(), executionID)
 
 		start := time.Now()
-		result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args, executionID)
+		result, err := s.agentClient.ExecuteFunction(r.Context(), best, functionName, req.Args, executionID)
 		elapsed := time.Since(start).Milliseconds()
 		if err != nil {
 			log.Printf("[execute] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
@@ -742,7 +758,18 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 		StartedAt:    now,
 	})
 
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelMu.Lock()
+	s.cancels[executionID] = cancel
+	s.cancelMu.Unlock()
+
 	go func() {
+		defer func() {
+			s.cancelMu.Lock()
+			delete(s.cancels, executionID)
+			s.cancelMu.Unlock()
+			cancel()
+		}()
 		for {
 			var best *models.Agent
 			for _, a := range s.registry.GetAvailableAgents() {
@@ -769,21 +796,33 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 					return
 				}
 				log.Printf("[async] %s — no agents with sufficient resources, retrying...", functionName)
-				time.Sleep(500 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
 				continue
 			}
 
 			start := time.Now()
-			result, err := s.agentClient.ExecuteFunction(best, functionName, req.Args, executionID)
+			result, err := s.agentClient.ExecuteFunction(ctx, best, functionName, req.Args, executionID)
 			elapsed := time.Since(start).Milliseconds()
 			if err != nil {
-				log.Printf("[async] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
 				statusAt := time.Now()
+				status := models.ExecutionStatusFailed
+				errMsg := err.Error()
+				if ctx.Err() != nil {
+					status = models.ExecutionStatusCancelled
+					errMsg = "execution cancelled"
+					log.Printf("[async] %s cancelled on agent=%s", functionName, best.ID)
+				} else {
+					log.Printf("[async] %s failed on agent=%s in %dms: %v", functionName, best.ID, elapsed, err)
+				}
 				s.registry.SaveExecution(&models.ExecutionRecord{
 					ExecutionID:  executionID,
 					FunctionName: functionName,
-					Status:       models.ExecutionStatusFailed,
-					Error:        err.Error(),
+					Status:       status,
+					Error:        errMsg,
 					DurationMs:   elapsed,
 					StartedAt:    now,
 					StatusAt:     &statusAt,
@@ -806,7 +845,11 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 					return
 				}
 				log.Printf("[async] %s at capacity on agent=%s, retrying...", functionName, best.ID)
-				time.Sleep(500 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
 				continue
 			}
 
@@ -835,6 +878,23 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "execution_id": executionID})
+}
+
+func (s *APIServer) handleCancelExecution(w http.ResponseWriter, r *http.Request, executionID string) {
+	s.cancelMu.Lock()
+	cancel, ok := s.cancels[executionID]
+	s.cancelMu.Unlock()
+
+	if !ok {
+		http.Error(w, "execution not found or already completed", http.StatusNotFound)
+		return
+	}
+
+	cancel()
+	log.Printf("[cancel] Execution %s cancelled", executionID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "execution_id": executionID})
 }
 
 func (s *APIServer) handleExecutionLogs(w http.ResponseWriter, r *http.Request, executionID string) {
