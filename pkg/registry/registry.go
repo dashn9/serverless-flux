@@ -196,16 +196,6 @@ func (r *Registry) GetCodeArchive(functionName string) []byte {
 	return data
 }
 
-func (r *Registry) SaveExecution(record *models.ExecutionRecord) {
-	if err := r.memory.SaveExecution(record); err != nil {
-		log.Printf("[registry] Failed to save execution %s: %v", record.ExecutionID, err)
-	}
-}
-
 func (r *Registry) GetExecution(executionID string) (*models.ExecutionRecord, error) {
 	return r.memory.GetExecution(executionID)
-}
-
-func (r *Registry) GetExecutionLogs(executionID string) (string, error) {
-	return r.memory.GetExecutionLogs(executionID)
 }

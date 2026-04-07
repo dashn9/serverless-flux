@@ -140,7 +140,7 @@ func (c *AgentClient) DeployFunction(agent *models.Agent, functionName string, z
 	return nil
 }
 
-func (c *AgentClient) ExecuteFunction(ctx context.Context, agent *models.Agent, functionName string, args []string, executionID string) (*pb.ExecutionResponse, error) {
+func (c *AgentClient) ExecuteFunction(ctx context.Context, agent *models.Agent, functionName string, args []string, executionID string, async bool) (*pb.ExecutionResponse, error) {
 	cl, err := c.get(agent.Address)
 	if err != nil {
 		return nil, err
@@ -150,7 +150,27 @@ func (c *AgentClient) ExecuteFunction(ctx context.Context, agent *models.Agent, 
 		FunctionName: functionName,
 		Args:         args,
 		ExecutionId:  executionID,
+		Async:        async,
 	})
+}
+
+func (c *AgentClient) CancelExecution(agent *models.Agent, executionID string) error {
+	cl, err := c.get(agent.Address)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := cl.CancelExecution(ctx, &pb.CancelExecutionRequest{ExecutionId: executionID})
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("cancel failed: %s", resp.Message)
+	}
+	return nil
 }
 
 func (c *AgentClient) HealthCheck(agent *models.Agent) error {

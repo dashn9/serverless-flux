@@ -19,10 +19,8 @@ type Memory interface {
 	GetAllAgents() ([]*models.Agent, error)
 	DeleteAgent(id string) error
 
-	// Execution log operations
-	SaveExecution(record *models.ExecutionRecord) error
+	// Execution operations — records are written by the agent, read here by Flux
 	GetExecution(executionID string) (*models.ExecutionRecord, error)
-	GetExecutionLogs(executionID string) (string, error)
 
 	// Close the storage connection
 	Close() error

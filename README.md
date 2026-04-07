@@ -152,7 +152,8 @@ All protected endpoints require an `X-API-Key` header (or `Authorization: Bearer
 | `PUT` | `/deploy/{name}` | Deploy function code (zip body) |
 | `POST` | `/execute/{name}` | Execute a function (synchronous) |
 | `POST` | `/execute/{name}/async` | Execute a function (fire-and-forget) |
-| `GET` | `/executions/{id}/logs` | Poll logs for an async execution |
+| `GET` | `/executions/{id}` | Fetch status and output for an async execution |
+| `DELETE` | `/executions/{id}` | Cancel a running async execution |
 | `DELETE` | `/nodes` | Terminate and deregister all managed nodes |
 | `GET` | `/resources` | Flux and agent CPU/memory/uptime stats |
 
@@ -190,7 +191,7 @@ Every execution response includes an `execution_id` (e.g. `exc-550e8400-...`) wh
 
 ### Async Execute
 
-Fire-and-forget execution — returns immediately with an execution ID.
+Fire-and-forget execution — Flux submits the job to the agent and returns immediately. The agent owns the full execution lifecycle including logging, status tracking, and cancellation.
 
 ```bash
 curl -X POST http://localhost:7227/execute/hello-world/async \
@@ -203,24 +204,35 @@ curl -X POST http://localhost:7227/execute/hello-world/async \
 {"status": "accepted", "execution_id": "exc-550e8400-..."}
 ```
 
-### Poll Execution Logs
+### Fetch Execution
+
+Poll status and output for a running or completed async execution.
 
 ```bash
-curl http://localhost:7227/executions/exc-550e8400-.../logs \
+curl http://localhost:7227/executions/exc-550e8400-... \
   -H "X-API-Key: your-secret-key"
 ```
 
 While running:
 ```json
-{"execution_id": "exc-...", "function_name": "hello-world", "status": "running", "output": "partial output so far...", "started_at": "..."}
+{"execution_id": "exc-...", "agent_id": "agent-1", "function_name": "hello-world", "status": "running", "output": "partial output so far...", "started_at": "..."}
 ```
 
 Once complete:
 ```json
-{"execution_id": "exc-...", "function_name": "hello-world", "status": "success", "output": "full output", "duration_ms": 42, "started_at": "...", "status_at": "..."}
+{"execution_id": "exc-...", "agent_id": "agent-1", "function_name": "hello-world", "status": "success", "output": "full output", "duration_ms": 42, "started_at": "...", "status_at": "..."}
 ```
 
 The `output` field is updated live as the function writes to stdout/stderr — poll repeatedly to stream progress. Execution records expire after **1 hour**.
+
+### Cancel Execution
+
+```bash
+curl -X DELETE http://localhost:7227/executions/exc-550e8400-... \
+  -H "X-API-Key: your-secret-key"
+```
+
+Flux routes the cancel to the agent running the execution. The process is killed immediately and the status is updated to `cancelled`.
 
 ## Autoscaling
 

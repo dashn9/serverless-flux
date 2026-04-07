@@ -115,6 +115,7 @@ const (
 
 type ExecutionRecord struct {
 	ExecutionID  string          `json:"execution_id"`
+	AgentID      string          `json:"agent_id"`
 	FunctionName string          `json:"function_name"`
 	Status       ExecutionStatus `json:"status"`
 	Output       string          `json:"output,omitempty"`
