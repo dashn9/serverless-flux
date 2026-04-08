@@ -391,7 +391,7 @@ func (a *Autoscaler) spawnNode(ctx context.Context, resources NodeResources) {
 		return
 	}
 
-	agentAddr := fmt.Sprintf("%s:%d", node.PrivateIP, config.Get().AgentPort)
+	agentAddr := fmt.Sprintf("%s:%d", node.PublicIP, config.Get().AgentPort)
 	a.registry.RegisterOfflineAgent(node.AgentID, agentAddr, node.ProviderID, node.InstanceType, a.provider.Name())
 
 	log.Printf("[autoscaler] Node spawned: agent=%s type=%s addr=%s — bootstrapping...",
