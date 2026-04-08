@@ -763,6 +763,7 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 		return
 	}
 
+	s.registry.SaveExecutionToAgentMap(executionID, best.ID)
 	log.Printf("[async] %s submitted to agent=%s execution_id=%s", functionName, best.ID, executionID)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -771,23 +772,13 @@ func (s *APIServer) handleAsyncExecute(w http.ResponseWriter, r *http.Request, f
 }
 
 func (s *APIServer) handleCancelExecution(w http.ResponseWriter, r *http.Request, executionID string) {
-	// Execution state is owned by the agent — read the record to find which agent is running it.
-	// Note: this is a pass-through; Flux does not manage async execution lifecycle directly.
-	record, err := s.registry.GetExecution(executionID)
-	if err != nil {
-		http.Error(w, "failed to retrieve execution: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if record == nil {
+	agentID, ok := s.registry.GetExecutionToAgentMap(executionID)
+	if !ok {
 		http.Error(w, "execution not found", http.StatusNotFound)
 		return
 	}
-	if record.Status != models.ExecutionStatusRunning {
-		http.Error(w, "execution is not running", http.StatusConflict)
-		return
-	}
 
-	agent, ok := s.registry.GetAgent(record.AgentID)
+	agent, ok := s.registry.GetAgent(agentID)
 	if !ok {
 		http.Error(w, "agent not found", http.StatusInternalServerError)
 		return
@@ -798,21 +789,34 @@ func (s *APIServer) handleCancelExecution(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	log.Printf("[cancel] Execution %s cancelled on agent=%s", executionID, record.AgentID)
+	log.Printf("[cancel] Execution %s cancelled on agent=%s", executionID, agentID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled", "execution_id": executionID})
 }
 
 func (s *APIServer) handleGetExecution(w http.ResponseWriter, r *http.Request, executionID string) {
-	record, err := s.registry.GetExecution(executionID)
+	agentID, ok := s.registry.GetExecutionToAgentMap(executionID)
+	if !ok {
+		http.Error(w, "execution not found", http.StatusNotFound)
+		return
+	}
+
+	agent, ok := s.registry.GetAgent(agentID)
+	if !ok {
+		http.Error(w, "agent not found", http.StatusInternalServerError)
+		return
+	}
+
+	record, err := s.agentClient.GetExecution(agent, executionID)
 	if err != nil {
 		http.Error(w, "failed to retrieve execution: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if record == nil {
-		http.Error(w, "execution not found", http.StatusNotFound)
+		http.Error(w, "execution not found on agent", http.StatusNotFound)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(record)
 }

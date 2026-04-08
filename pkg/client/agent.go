@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -171,6 +172,30 @@ func (c *AgentClient) CancelExecution(agent *models.Agent, executionID string) e
 		return fmt.Errorf("cancel failed: %s", resp.Message)
 	}
 	return nil
+}
+
+func (c *AgentClient) GetExecution(agent *models.Agent, executionID string) (*models.ExecutionRecord, error) {
+	cl, err := c.get(agent.Address)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := cl.GetExecution(ctx, &pb.GetExecutionRequest{ExecutionId: executionID})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, nil
+	}
+
+	var record models.ExecutionRecord
+	if err := json.Unmarshal(resp.Data, &record); err != nil {
+		return nil, fmt.Errorf("decode execution record: %w", err)
+	}
+	return &record, nil
 }
 
 func (c *AgentClient) HealthCheck(agent *models.Agent) error {

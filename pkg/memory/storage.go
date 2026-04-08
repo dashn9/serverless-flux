@@ -2,7 +2,7 @@ package memory
 
 import "flux/pkg/models"
 
-// Memory is the interface for persisting state
+// Memory is the interface for persisting and routing Flux state.
 type Memory interface {
 	// Function operations
 	SaveFunction(function *models.Function) error
@@ -19,8 +19,11 @@ type Memory interface {
 	GetAllAgents() ([]*models.Agent, error)
 	DeleteAgent(id string) error
 
-	// Execution operations — records are written by the agent, read here by Flux
-	GetExecution(executionID string) (*models.ExecutionRecord, error)
+	// ExecutionToAgentMap — maps executionID to the agent that owns it.
+	// Written by Flux at async dispatch; used to route GetExecution and
+	// CancelExecution to the correct agent without touching the agent's Redis.
+	SaveExecutionToAgentMap(executionID, agentID string) error
+	GetExecutionToAgentMap(executionID string) (agentID string, err error)
 
 	// Close the storage connection
 	Close() error

@@ -196,6 +196,17 @@ func (r *Registry) GetCodeArchive(functionName string) []byte {
 	return data
 }
 
-func (r *Registry) GetExecution(executionID string) (*models.ExecutionRecord, error) {
-	return r.memory.GetExecution(executionID)
+func (r *Registry) SaveExecutionToAgentMap(executionID, agentID string) {
+	if err := r.memory.SaveExecutionToAgentMap(executionID, agentID); err != nil {
+		log.Printf("[registry] Failed to save execution map %s→%s: %v", executionID, agentID, err)
+	}
+}
+
+func (r *Registry) GetExecutionToAgentMap(executionID string) (string, bool) {
+	agentID, err := r.memory.GetExecutionToAgentMap(executionID)
+	if err != nil {
+		log.Printf("[registry] Failed to get execution map for %s: %v", executionID, err)
+		return "", false
+	}
+	return agentID, agentID != ""
 }
