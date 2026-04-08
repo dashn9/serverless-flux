@@ -2,6 +2,12 @@ api_key: your-secret-key-here
 
 redis_addr: localhost:6379
 
+# agent_redis_url is the Redis URL written into bootstrapped agent configs.
+# Set this when agents must reach Redis via a different address than Flux does
+# (e.g. Flux uses localhost, agents use a public/remote URL).
+# When omitted, agents inherit redis_addr.
+# agent_redis_url: redis://redis.example.com:6379
+
 # agent_port is the gRPC port Flux dials on each agent (default: 50052)
 agent_port: 50052
 

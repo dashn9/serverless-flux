@@ -10,11 +10,20 @@ import (
 )
 
 type FluxConfig struct {
-	APIKey    string           `yaml:"api_key"`
-	RedisAddr string           `yaml:"redis_addr"`
-	AgentPort int              `yaml:"agent_port"`
-	CertsDir  string           `yaml:"certs_dir,omitempty"`
-	Providers *ProvidersConfig `yaml:"providers,omitempty"`
+	APIKey        string           `yaml:"api_key"`
+	RedisAddr     string           `yaml:"redis_addr"`
+	AgentRedisURL string           `yaml:"agent_redis_url,omitempty"`
+	AgentPort     int              `yaml:"agent_port"`
+	CertsDir      string           `yaml:"certs_dir,omitempty"`
+	Providers     *ProvidersConfig `yaml:"providers,omitempty"`
+}
+
+// AgentRedisAddr returns the Redis URL agents should use. Falls back to RedisAddr if AgentRedisURL is not set.
+func (c *FluxConfig) AgentRedisAddr() string {
+	if c.AgentRedisURL != "" {
+		return c.AgentRedisURL
+	}
+	return c.RedisAddr
 }
 
 // ProvidersConfig holds configuration for each supported cloud provider.
