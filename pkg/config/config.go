@@ -15,6 +15,7 @@ type FluxConfig struct {
 	AgentRedisURL string           `yaml:"agent_redis_url,omitempty"`
 	AgentPort     int              `yaml:"agent_port"`
 	CertsDir      string           `yaml:"certs_dir,omitempty"`
+	DisableGRPCTLS bool            `yaml:"disable_grpc_tls,omitempty"`
 	Providers     *ProvidersConfig `yaml:"providers,omitempty"`
 }
 

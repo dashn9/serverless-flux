@@ -120,12 +120,12 @@ type ResourcesResponse struct {
 	Agents []AgentResourceInfo `json:"agents"`
 }
 
-// RegisterNodeRequest is the body for POST /nodes/register.
-// An agent calls this endpoint when it has booted and is ready to accept work.
-type RegisterNodeRequest struct {
-	ID      string `json:"id"`
+// RegisterAgentRequest is the body for POST /agents/register.
+// Flux dials the agent at Address to fetch its identity and node stats.
+// Set TLS to true if the agent has tls.enabled: true in its config.
+type RegisterAgentRequest struct {
 	Address string `json:"address"`
-	NodeId  string `json:"node_id"`
+	TLS     bool   `json:"tls"`
 }
 
 func NewAPIServer(registry *registry.Registry, agentClient *client.AgentClient, initializer Initializer) *APIServer {
@@ -156,16 +156,12 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST /nodes/register — an agent calls this to register itself with Flux.
-	// The agent provides its own ID, reachable address, and concurrency limit.
-	// Use this for any node that isn't statically declared in flux.yaml,
-	// including nodes co-located on the same host (use address: localhost:<port>).
-	if r.URL.Path == "/nodes/register" && r.Method == "POST" {
+	if r.URL.Path == "/agents/register" && r.Method == "POST" {
 		if !s.authenticate(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		s.handleRegisterNode(w, r)
+		s.handleRegisterAgent(w, r)
 		return
 	}
 
@@ -326,17 +322,13 @@ func (s *APIServer) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// handleRegisterNode handles POST /nodes/register.
-// An agent (or its bootstrap script) calls this to join the Flux fleet.
-func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
-	var req RegisterNodeRequest
+// handleRegisterAgent handles POST /agents/register.
+// Flux dials the agent at the given address, fetches its identity and stats,
+// enforces uniqueness, and registers it into the fleet.
+func (s *APIServer) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
+	var req RegisterAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if req.ID == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
 	if req.Address == "" {
@@ -344,17 +336,46 @@ func (s *APIServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.registry.RegisterAgent(req.ID, req.Address, req.NodeId, "", "")
-	log.Printf("[api] Node registered: id=%s address=%s node_id=%s", req.ID, req.Address, req.NodeId)
+	// Dial the agent to get its ID and current node stats.
+	probe := &models.Agent{Address: req.Address}
+	status, err := s.agentClient.GetNodeStatus(probe)
+	if err != nil {
+		http.Error(w, "failed to reach agent: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 
-	// Sync all registered functions and deployed code to the new agent.
-	go s.syncFunctionsToAgent(req.ID, req.Address)
+	agentID := status.AgentID
+	if agentID == "" {
+		http.Error(w, "agent returned empty ID", http.StatusBadGateway)
+		return
+	}
+
+	// Uniqueness check — reject if already registered at a different address.
+	if existing, ok := s.registry.GetAgent(agentID); ok && existing.Address != req.Address {
+		http.Error(w, "agent already registered at a different address", http.StatusConflict)
+		return
+	}
+
+	s.registry.RegisterAgent(agentID, req.Address, "", "", "")
+	s.registry.UpdateNodeStatus(agentID, status)
+	log.Printf("[api] Agent registered: id=%s address=%s", agentID, req.Address)
+
+	go s.syncFunctionsToAgent(agentID, req.Address)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "registered",
-		"id":     req.ID,
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "registered",
+		"id":      agentID,
+		"address": req.Address,
+		"node": map[string]interface{}{
+			"cpu_percent":    status.CPUPercent,
+			"memory_percent": status.MemPercent,
+			"memory_total_mb": status.MemTotalMB,
+			"memory_used_mb":  status.MemUsedMB,
+			"active_tasks":   status.ActiveTasks,
+			"uptime_seconds": status.UptimeSec,
+		},
 	})
 }
 

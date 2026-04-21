@@ -17,6 +17,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type AgentClient struct {
@@ -26,7 +27,11 @@ type AgentClient struct {
 }
 
 func NewAgentClient(p *pki.PKI) *AgentClient {
-	log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", p.CACertPath(), p.FluxCertPath())
+	if p != nil {
+		log.Printf("[grpc] client: mTLS (ca=%s cert=%s)", p.CACertPath(), p.FluxCertPath())
+	} else {
+		log.Printf("[grpc] client: TLS disabled")
+	}
 	return &AgentClient{
 		clients: make(map[string]pb.AgentServiceClient),
 		pki:     p,
@@ -48,9 +53,15 @@ func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
 		return cl, nil
 	}
 
-	creds, err := c.loadTLSCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("load mTLS credentials: %w", err)
+	var creds credentials.TransportCredentials
+	if c.pki != nil {
+		var err error
+		creds, err = c.loadTLSCredentials()
+		if err != nil {
+			return nil, fmt.Errorf("load mTLS credentials: %w", err)
+		}
+	} else {
+		creds = insecure.NewCredentials()
 	}
 
 	conn, err := grpc.NewClient(address,

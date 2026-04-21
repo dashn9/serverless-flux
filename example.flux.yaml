@@ -15,6 +15,11 @@ agent_port: 50052
 # Default: /etc/flux/certs (Linux/macOS), %PROGRAMDATA%\flux\certs (Windows)
 # certs_dir: /etc/flux/certs
 
+# disable_grpc_tls disables mTLS on all agent connections.
+# Set to true only for local development or trusted private networks.
+# Agents must also set tls.enabled: false in their config when this is on.
+# disable_grpc_tls: false
+
 providers:
   aws:
     region: us-east-1

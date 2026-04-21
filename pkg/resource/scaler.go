@@ -154,6 +154,13 @@ func (a *Autoscaler) poll(ctx context.Context) {
 
 		a.registry.UpdateNodeStatus(agent.ID, status)
 
+		// Only track pressure for agents managed by this provider.
+		// Manually registered agents (empty Provider) are excluded from
+		// scaling decisions.
+		if agent.Provider != a.provider.Name() {
+			continue
+		}
+
 		a.mu.Lock()
 		a.pressureHistory[agent.ID] = append(a.pressureHistory[agent.ID], pressureSample{
 			cpuPercent: status.CPUPercent,
@@ -180,7 +187,13 @@ func (a *Autoscaler) shouldScale() ScaleDirection {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	agents := a.registry.GetOnlineAgents()
+	all := a.registry.GetOnlineAgents()
+	agents := make([]*models.Agent, 0, len(all))
+	for _, ag := range all {
+		if ag.Provider == a.provider.Name() {
+			agents = append(agents, ag)
+		}
+	}
 	if len(agents) == 0 {
 		return ScaleDirectionNeutral
 	}
@@ -231,6 +244,19 @@ func (a *Autoscaler) shouldScale() ScaleDirection {
 	return ScaleDirectionNeutral
 }
 
+// managedAgents returns only agents owned by this autoscaler's provider.
+// Manually registered agents (empty Provider) are excluded.
+func (a *Autoscaler) managedAgents() []*models.Agent {
+	all := a.registry.GetAllAgents()
+	managed := make([]*models.Agent, 0, len(all))
+	for _, ag := range all {
+		if ag.Provider == a.provider.Name() {
+			managed = append(managed, ag)
+		}
+	}
+	return managed
+}
+
 // tryScaleUp attempts a scale-up, respecting cooldown and max-node limits.
 // Used by both the regular poll cycle and demand-driven hints.
 func (a *Autoscaler) tryScaleUp(ctx context.Context) {
@@ -241,9 +267,9 @@ func (a *Autoscaler) tryScaleUp(ctx context.Context) {
 		return
 	}
 
-	allAgents := a.registry.GetAllAgents()
+	managedAgents := a.managedAgents()
 
-	if len(allAgents) < a.cfg.MaxNodes {
+	if len(managedAgents) < a.cfg.MaxNodes {
 		a.lastScaleUp = time.Now()
 		a.spawnNode(ctx, smallestNodeResources(a.cfg.NodeTypes))
 		return
@@ -254,15 +280,15 @@ func (a *Autoscaler) tryScaleUp(ctx context.Context) {
 	maxRes := largestNodeResources(a.cfg.NodeTypes)
 
 	var candidate *models.Agent
-	for _, ag := range allAgents {
-		if ag.Provider == a.provider.Name() && ag.InstanceType != maxType && ag.ActiveCount == 0 {
+	for _, ag := range managedAgents {
+		if ag.InstanceType != maxType && ag.ActiveCount == 0 {
 			candidate = ag
 			break
 		}
 	}
 	if candidate == nil {
 		log.Printf("[autoscaler] At max nodes (%d/%d), all managed nodes are max hardware or busy",
-			len(allAgents), a.cfg.MaxNodes)
+			len(managedAgents), a.cfg.MaxNodes)
 		return
 	}
 
@@ -300,18 +326,18 @@ func (a *Autoscaler) checkAndTriggerScale(ctx context.Context) {
 		return
 	}
 
-	allAgents := a.registry.GetAllAgents()
+	managedAgents := a.managedAgents()
 
-	if len(allAgents) <= a.cfg.MinNodes {
+	if len(managedAgents) <= a.cfg.MinNodes {
 		log.Printf("[autoscaler] Scale-down skipped: already at min nodes (%d/%d)",
-			len(allAgents), a.cfg.MinNodes)
+			len(managedAgents), a.cfg.MinNodes)
 		return
 	}
 
 	// Pick the least-pressured idle node owned by this provider to decommission.
 	var target *models.Agent
-	for _, ag := range allAgents {
-		if ag.Provider != a.provider.Name() || ag.ActiveCount > 0 || ag.Status == models.AgentDraining {
+	for _, ag := range managedAgents {
+		if ag.ActiveCount > 0 || ag.Status == models.AgentDraining {
 			continue
 		}
 		if target == nil || ag.Pressure() < target.Pressure() {

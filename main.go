@@ -32,11 +32,17 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	pkiMgr, err := pki.New(config.Get().CertsDir)
-	if err != nil {
-		log.Fatalf("Failed to initialize PKI: %v", err)
+	var pkiMgr *pki.PKI
+	if !config.Get().DisableGRPCTLS {
+		p, err := pki.New(config.Get().CertsDir)
+		if err != nil {
+			log.Fatalf("Failed to initialize PKI: %v", err)
+		}
+		pkiMgr = p
+		log.Printf("PKI initialized (certs_dir=%s)", config.Get().CertsDir)
+	} else {
+		log.Printf("[grpc] TLS disabled — agents will be dialed without mTLS")
 	}
-	log.Printf("PKI initialized (certs_dir=%s)", config.Get().CertsDir)
 
 	mem := memory.NewRedisMemory()
 	defer mem.Close()
