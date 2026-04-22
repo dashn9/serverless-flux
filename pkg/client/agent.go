@@ -82,12 +82,12 @@ func (c *AgentClient) get(address string) (pb.AgentServiceClient, error) {
 func (c *AgentClient) loadTLSCredentials() (credentials.TransportCredentials, error) {
 	cert, err := tls.LoadX509KeyPair(c.pki.FluxCertPath(), c.pki.FluxKeyPath())
 	if err != nil {
-		return nil, fmt.Errorf("load flux cert/key: %w", err)
+		return nil, fmt.Errorf("load flux cert/key (cert=%s key=%s): %w", c.pki.FluxCertPath(), c.pki.FluxKeyPath(), err)
 	}
 
 	caData, err := os.ReadFile(c.pki.CACertPath())
 	if err != nil {
-		return nil, fmt.Errorf("read CA cert: %w", err)
+		return nil, fmt.Errorf("read CA cert (%s): %w", c.pki.CACertPath(), err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caData) {

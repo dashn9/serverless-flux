@@ -17,7 +17,7 @@ const agentDebURLTemplate = "https://github.com/dashn9/serverless-agent/releases
 
 // buildAgentYAML returns the agent.yaml content for the given node.
 func buildAgentYAML(agentID string, port int, redisAddr string, configDir string) string {
-	tlsBlock := fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert: %s/tls/agent.pem\n  key: %s/tls/agent-key.pem\n",
+	tlsBlock := fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert_file: %s/tls/agent.pem\n  key_file: %s/tls/agent-key.pem\n",
 		configDir, configDir, configDir)
 	return fmt.Sprintf("agent_id: %s\nport: \"%d\"\nredis_addr: \"%s\"\n%s", agentID, port, redisAddr, tlsBlock)
 }
