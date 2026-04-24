@@ -57,7 +57,7 @@ go build -o flux .
 
 **Windows release artifact:**
 
-Download `flux_<version>_windows_amd64.zip` from GitHub Releases, extract it, copy `flux.yaml.example` to `flux.yaml`, then run `flux.exe`.
+Download `flux.exe` from GitHub Releases. Create `flux.yaml` from [`example.flux.yaml`](example.flux.yaml), then run `flux.exe`.
 
 The `.deb` installs a systemd service and places an example config at `/etc/flux/flux.yaml.example`.
 

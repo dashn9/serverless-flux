@@ -110,18 +110,10 @@ jobs:
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o flux.exe .
 
-      - name: Package Windows artifact
-        shell: powershell
-        run: |
-          New-Item -ItemType Directory -Path $env:PKG | Out-Null
-          Copy-Item flux.exe "$env:PKG\flux.exe"
-          Copy-Item example.flux.yaml "$env:PKG\flux.yaml.example"
-          Compress-Archive -Path "$env:PKG\*" -DestinationPath "$env:PKG.zip"
-
-      - name: Upload Windows artifact to GitHub Release
+      - name: Upload Windows executable to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ env.VERSION }}"
           name: "flux v${{ env.VERSION }}"
           generate_release_notes: true
-          files: "*.zip"
+          files: "flux.exe"
