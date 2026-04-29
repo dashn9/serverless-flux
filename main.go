@@ -74,9 +74,24 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), apiServer); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), withCORS(apiServer)); err != nil {
 		log.Fatalf("Failed to serve HTTP: %v", err)
 	}
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func startHealthPolling(ctx context.Context, reg *registry.Registry, agentClient *client.AgentClient, apiServer *api.APIServer) {
