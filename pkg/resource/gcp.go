@@ -10,6 +10,7 @@ import (
 	"flux/pkg/config"
 	"flux/pkg/pki"
 
+	"github.com/google/uuid"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
 )
@@ -22,7 +23,6 @@ type GCPProvider struct {
 	zoneOps      *compute.ZoneOperationsService
 	bootstrapper *SSHBootstrapper
 	pkiMgr       *pki.PKI
-	seqNum       int
 }
 
 // NewGCPProvider creates a GCP cloud provider with a configured Compute Engine client.
@@ -73,8 +73,7 @@ func (g *GCPProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		return nil, fmt.Errorf("instance selection failed: %w", err)
 	}
 
-	g.seqNum++
-	agentID := fmt.Sprintf("auto-agent-%d-%d", time.Now().Unix(), g.seqNum)
+	agentID := "auto-agent-" + uuid.NewString()[:8]
 	instanceName := "flux-agent-" + agentID
 
 	log.Printf("[gcp] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",

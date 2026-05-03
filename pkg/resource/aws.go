@@ -14,6 +14,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/google/uuid"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
@@ -26,7 +27,6 @@ const ec2KeyPairName = "flux-agent"
 type AWSProvider struct {
 	ec2Client    *ec2.Client
 	bootstrapper *SSHBootstrapper
-	seqNum       int
 }
 
 // NewAWSProvider creates an AWS cloud provider with a configured EC2 client.
@@ -87,8 +87,7 @@ func (a *AWSProvider) SpawnNode(ctx context.Context, resources NodeResources) (*
 		return nil, fmt.Errorf("instance selection failed: %w", err)
 	}
 
-	a.seqNum++
-	agentID := fmt.Sprintf("auto-agent-%d-%d", time.Now().Unix(), a.seqNum)
+	agentID := "auto-agent-" + uuid.NewString()[:8]
 
 	log.Printf("[aws] Selected %s for vcpus=%d memory_gb=%.1f (agent: %s)",
 		instanceType, resources.VCPUs, resources.MemoryGB, agentID)
