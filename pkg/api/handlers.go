@@ -262,7 +262,6 @@ func (s *APIServer) handleInitialize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no providers configured", http.StatusServiceUnavailable)
 		return
 	}
-	s.registry.Flush()
 	spawned, attempted := s.initializer.InitializeNodes()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -629,7 +628,8 @@ func (s *APIServer) handleExecute(w http.ResponseWriter, r *http.Request, functi
 
 func (s *APIServer) handleCleanupNodes(w http.ResponseWriter, r *http.Request) {
 	count := s.initializer.TerminateNodes()
-	log.Printf("[api] Nodes deregistered and terminated: count=%d", count)
+	s.registry.Flush()
+	log.Printf("[api] Nodes terminated and state flushed: count=%d", count)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
