@@ -32,6 +32,22 @@ func NewRedisMemory() *RedisMemory {
 	}
 }
 
+func (r *RedisMemory) Flush() error {
+	patterns := []string{"flux:agents:*", "flux:execmap:*", "flux:functions:*", "flux:code:*"}
+	for _, pattern := range patterns {
+		keys, err := r.client.Keys(r.ctx, pattern).Result()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			if err := r.client.Del(r.ctx, keys...).Err(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (r *RedisMemory) Close() error {
 	return r.client.Close()
 }
@@ -43,12 +59,12 @@ func (r *RedisMemory) SaveFunction(function *models.Function) error {
 		return err
 	}
 
-	key := fmt.Sprintf("function:%s", function.Name)
+	key := fmt.Sprintf("flux:functions:%s", function.Name)
 	return r.client.Set(r.ctx, key, data, 0).Err()
 }
 
 func (r *RedisMemory) GetFunction(name string) (*models.Function, error) {
-	key := fmt.Sprintf("function:%s", name)
+	key := fmt.Sprintf("flux:functions:%s", name)
 	data, err := r.client.Get(r.ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -66,7 +82,7 @@ func (r *RedisMemory) GetFunction(name string) (*models.Function, error) {
 }
 
 func (r *RedisMemory) GetAllFunctions() ([]*models.Function, error) {
-	keys, err := r.client.Keys(r.ctx, "function:*").Result()
+	keys, err := r.client.Keys(r.ctx, "flux:functions:*").Result()
 	if err != nil || len(keys) == 0 {
 		return nil, err
 	}
@@ -93,12 +109,12 @@ func (r *RedisMemory) GetAllFunctions() ([]*models.Function, error) {
 
 // Code archive operations
 func (r *RedisMemory) SaveCodeArchive(functionName string, data []byte) error {
-	key := fmt.Sprintf("code:%s", functionName)
+	key := fmt.Sprintf("flux:code:%s", functionName)
 	return r.client.Set(r.ctx, key, data, 0).Err()
 }
 
 func (r *RedisMemory) GetCodeArchive(functionName string) ([]byte, error) {
-	key := fmt.Sprintf("code:%s", functionName)
+	key := fmt.Sprintf("flux:code:%s", functionName)
 	data, err := r.client.Get(r.ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {

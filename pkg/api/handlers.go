@@ -262,6 +262,7 @@ func (s *APIServer) handleInitialize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no providers configured", http.StatusServiceUnavailable)
 		return
 	}
+	s.registry.Flush()
 	spawned, attempted := s.initializer.InitializeNodes()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

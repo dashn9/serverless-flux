@@ -16,10 +16,10 @@ import (
 const agentDebURLTemplate = "https://github.com/dashn9/serverless-agent/releases/download/v%s/flux-agent_%s_amd64.deb"
 
 // buildAgentYAML returns the agent.yaml content for the given node.
-func buildAgentYAML(agentID string, port int, redisAddr string, configDir string) string {
+func buildAgentYAML(agentID string, port int, configDir string) string {
 	tlsBlock := fmt.Sprintf("\ntls:\n  enabled: true\n  ca_cert: %s/tls/ca.pem\n  cert_file: %s/tls/agent.pem\n  key_file: %s/tls/agent-key.pem\n",
 		configDir, configDir, configDir)
-	return fmt.Sprintf("agent_id: %s\nport: \"%d\"\nredis_addr: \"%s\"\n%s", agentID, port, redisAddr, tlsBlock)
+	return fmt.Sprintf("agent_id: %s\nport: \"%d\"\n%s", agentID, port, tlsBlock)
 }
 
 // BootstrapConfig holds everything needed to configure and start an agent on a
@@ -33,7 +33,6 @@ type BootstrapConfig struct {
 
 	// Agent runtime configuration written to the remote node.
 	AgentPort int
-	RedisAddr string
 
 	// AgentVersion is used to download the .deb from GitHub Releases.
 	AgentVersion string
@@ -116,7 +115,7 @@ func (b *SSHBootstrapper) Bootstrap(ctx context.Context, node *ProvisionedNode) 
 	log.Printf("[bootstrap] Agent TLS certs deployed to %s", node.PublicIP)
 
 	// Write agent.yaml.
-	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, b.cfg.RedisAddr, configDir)
+	agentYAML := buildAgentYAML(node.AgentID, b.cfg.AgentPort, configDir)
 	writeCmd := fmt.Sprintf("sudo tee %s/agent.yaml > /dev/null <<'EOF'\n%sEOF", configDir, agentYAML)
 	if err := b.run(client, writeCmd); err != nil {
 		return fmt.Errorf("write agent.yaml: %w", err)

@@ -25,6 +25,10 @@ type Memory interface {
 	SaveExecutionToAgentMap(executionID, agentID string) error
 	GetExecutionToAgentMap(executionID string) (agentID string, err error)
 
+	// Flush wipes all Flux-managed state from the store. Used on reinitialize
+	// to prevent stale data from bleeding into a new session.
+	Flush() error
+
 	// Close the storage connection
 	Close() error
 }

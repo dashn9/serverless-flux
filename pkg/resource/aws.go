@@ -61,7 +61,6 @@ func NewAWSProvider(pkiMgr *pki.PKI) (*AWSProvider, error) {
 		PKI:                pkiMgr,
 		SSHUser:            cfg.SSHUser,
 		AgentPort:          fluxCfg.AgentPort,
-		RedisAddr:          fluxCfg.AgentRedisAddr(),
 		AgentVersion:       cfg.AgentVersion,
 		AgentSetupCommands: cfg.AgentSetupCommands,
 	})

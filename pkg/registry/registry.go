@@ -52,6 +52,12 @@ func (r *Registry) DeregisterAgent(id string) {
 	}
 }
 
+func (r *Registry) Flush() {
+	if err := r.memory.Flush(); err != nil {
+		log.Printf("[registry] Flush failed: %v", err)
+	}
+}
+
 func (r *Registry) SetOffline(id string) {
 	agent, err := r.memory.GetAgent(id)
 	if err != nil || agent == nil {
