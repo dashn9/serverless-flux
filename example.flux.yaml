@@ -117,7 +117,6 @@ providers:
       cpu_lower_threshold: 45
       mem_upper_threshold: 80
       mem_lower_threshold: 45
-
       evaluation_window_sec: 60
       poll_interval_sec: 10
       cooldown_sec: 300
